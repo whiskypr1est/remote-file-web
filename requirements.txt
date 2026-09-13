@@ -1,0 +1,36 @@
+# ===========================================================================
+#  远程文件管理 —— Python 依赖清单
+#  安装： pip install -r requirements.txt
+#  建议在虚拟环境中安装：
+#      python -m venv .venv
+#      .venv\Scripts\activate
+#      pip install -r requirements.txt
+# ===========================================================================
+
+# Web 框架与 ASGI 服务器
+fastapi>=0.111
+uvicorn[standard]>=0.27
+
+# 图片缩略图生成（目录列表里的 100x100 缩略图）
+Pillow>=10.0
+
+# 删除文件到系统回收站（config.json 中 delete.use_recycle_bin=true 时需要）
+send2trash>=1.8
+
+# 真终端（ConPTY）：给虚拟桌面里的「命令提示符」窗口分配一个**真正的 TTY**。
+# 装上之后裸 `python` 等交互式程序、Tab 补全、Ctrl+C 中断、窗口尺寸调整才可用；
+# 没装也能跑（会自动退回管道模式），但上面这些交互能力都会缺失。
+# 仅 Windows 需要，用环境标记避免在其它平台尝试编译。
+pywinpty>=2.0 ; sys_platform == "win32"
+
+# 压缩/解压：7z 的读写（纯 Python，自带 7z 编解码器，不依赖外部程序）
+py7zr>=0.20
+
+# RAR 的读取与列表（rarfile 本身不含解压算法，需要外部 UnRAR.exe，
+# 代码会在 C:\Program Files\WinRAR 等常见位置自动探测，
+# 也可以在 config.json 的 archive.unrar_path / rar_path 里指定）
+rarfile>=4.0
+
+# 可选：本项目上传走「原始请求体」而不是 multipart 表单，因此并非必需。
+# 保留它是为了将来扩展表单接口时不用再补装。
+python-multipart>=0.0.9

@@ -1,0 +1,132 @@
+{
+  "server": {
+    "host": "0.0.0.0",
+    "port": 8000,
+    "title": "远程文件管理"
+  },
+  "roots": [
+    {
+      "id": "share",
+      "name": "共享目录",
+      "path": "D:\\Share",
+      "readonly": false
+    }
+  ],
+  "mount_all_drives": true,
+  "mount_network_drives": false,
+  "mount_removable_drives": true,
+  "protected_paths": [
+    "C:\\Windows",
+    "C:\\Program Files",
+    "C:\\Program Files (x86)",
+    "C:\\ProgramData",
+    "C:\\$Recycle.Bin",
+    "C:\\System Volume Information",
+    "C:\\Recovery",
+    "C:\\PerfLogs"
+  ],
+  "auth": {
+    "username": "admin",
+    "password_hash": "pbkdf2_sha256$260000$请用-tools/gen_password.py-生成$请用-tools/gen_password.py-生成",
+    "password": "",
+    "session_secret": "请填入随机字符串，留空则启动时自动生成",
+    "session_hours": 12,
+    "max_login_fails": 5,
+    "lockout_seconds": 300,
+    "trusted_proxies": []
+  },
+  "ui": {
+    "wallpaper": "",
+    "default_view": "icons"
+  },
+  "user_state_path": "user_state.json",
+  "upload": {
+    "max_file_size_mb": 2048,
+    "blocked_extensions": [
+      ".exe",
+      ".com",
+      ".scr",
+      ".pif",
+      ".cpl",
+      ".msi",
+      ".msp",
+      ".bat",
+      ".cmd",
+      ".ps1",
+      ".psm1",
+      ".psd1",
+      ".vbs",
+      ".vbe",
+      ".wsf",
+      ".wsh",
+      ".hta",
+      ".reg",
+      ".inf",
+      ".msc",
+      ".sct",
+      ".dll",
+      ".sys",
+      ".drv",
+      ".ocx",
+      ".gadget",
+      ".job",
+      ".lnk",
+      ".appx",
+      ".msix",
+      ".appxbundle"
+    ]
+  },
+  "delete": {
+    "use_recycle_bin": true
+  },
+  "terminal": {
+    "enabled": true,
+    "shell": "cmd.exe",
+    "max_sessions": 4,
+    "idle_timeout_seconds": 1800,
+    "max_output_kb": 512,
+    "evict_grace_seconds": 20,
+    "start_dir": ""
+  },
+  "thumbs": {
+    "enabled": true,
+    "cache_dir": "./thumb_cache",
+    "size": 100,
+    "max_cache_mb": 512
+  },
+  "office": {
+    "enabled": true,
+    "soffice_path": "",
+    "timeout_seconds": 120,
+    "cache_dir": "./office_cache",
+    "max_cache_mb": 1024
+  },
+  "archive": {
+    "max_entries": 20000,
+    "max_total_mb": 8192,
+    "max_single_mb": 4096,
+    "rar_path": "",
+    "unrar_path": ""
+  },
+  "preview": {
+    "text_max_kb": 2048
+  },
+  "log": {
+    "level": "info"
+  },
+  "_说明": [
+    "roots 可以配置多个根目录，前端会以「此电脑」形式展示。",
+    "password_hash 请用 python tools/gen_password.py 生成，不要明文保存密码。",
+    "upload.blocked_extensions 为上传黑名单，按需增删。",
+    "delete.use_recycle_bin=true 时删除进回收站，可恢复。",
+    "thumbs.cache_dir / office.cache_dir 支持相对路径（相对本文件所在目录）。",
+    "auth.trusted_proxies 只有在前面挂了反向代理时才需要填；填了才会采信 X-Forwarded-For，否则登录失败锁定会被伪造该头绕过。",
+    "terminal.enabled 默认开启，等于把服务器命令行交给任何能登录本服务的人；以 Windows 服务方式运行时身份是 SYSTEM，不需要时请改为 false。",
+    "命令行窗口现在是真终端（后端 ConPTY/pywinpty + 前端 xterm.js）：裸 python 可交互、Tab 补全、Ctrl+C 真中断、支持中文输入法；若目标机器没装 pywinpty 会自动退回管道模式（届时这些交互能力不可用）。",
+    "thumbs.max_cache_mb / office.max_cache_mb 分别是缩略图与 Office 转换缓存的体积上限，超出后按最旧优先清理。",
+    "archive.max_entries / max_total_mb / max_single_mb 是解压时的上限（条目数、解压后总体积、单个文件），同时也是「解压炸弹」的防线，不建议调得过大。",
+    "解压 RAR 需要 WinRAR 的 UnRAR.exe、创建 RAR 需要 Rar.exe；留空会自动探测 C:\\Program Files\\WinRAR\\，装在别处就填 archive.rar_path / archive.unrar_path。7z 走 py7zr，不需要外部程序。",
+    "user_state_path 是「关闭页面再打开还是之前的界面」所依赖的状态文件（窗口布局、所在目录、视图模式）；默认与 desktop_shortcuts.json 同级，删掉它即可恢复默认布局。支持相对路径（相对**本文件所在目录**解析）；因此用别的配置文件起多实例时，状态各存各的、不会互相覆盖真实部署的那一份。",
+    "terminal.evict_grace_seconds：会话上限满了之后，一个「没有客户端连着且已闲置这么久」的旧会话可以被新会话顶掉，而不是直接报「会话数已达上限」。因为关掉浏览器不再结束会话，分离的会话仍占名额，这个值就是留给它的出路。"
+  ]
+}

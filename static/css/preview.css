@@ -1,0 +1,581 @@
+/* ==========================================================================
+   预览窗口样式
+   --------------------------------------------------------------------------
+   涵盖：图片查看器、PDF 阅读器、文本查看器、音视频播放器、
+         Office 降级 HTML 预览（.ox-* 类，由后端 office.py 生成）
+   ========================================================================== */
+
+/* 所有预览窗口的通用骨架 */
+.preview {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  background: #fff;
+  overflow: hidden;
+}
+
+.preview-toolbar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  background: #f7f8f9;
+  border-bottom: 1px solid #e6e8ec;
+  flex-wrap: wrap;
+}
+
+.preview-toolbar .spacer {
+  flex: 1 1 auto;
+}
+
+.pv-btn {
+  height: 27px;
+  min-width: 30px;
+  padding: 0 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  font-size: 12.5px;
+  font-family: inherit;
+  color: #23272d;
+  background: #fff;
+  border: 1px solid #d3d8de;
+  border-radius: 3px;
+  cursor: default;
+  transition: background .1s, border-color .1s;
+  white-space: nowrap;
+}
+
+.pv-btn svg {
+  width: 14px;
+  height: 14px;
+  fill: #4a5058;
+}
+
+.pv-btn:hover:not(:disabled) {
+  background: #eef3fa;
+  border-color: #b9c6d6;
+}
+
+.pv-btn:disabled {
+  opacity: .4;
+}
+
+.pv-label {
+  font-size: 12px;
+  color: #5a6169;
+  padding: 0 4px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.pv-body {
+  flex: 1 1 auto;
+  position: relative;
+  min-height: 0;
+  background: #f3f4f6;
+  /* 这里刻意「不」滚动：真正的滚动容器是内部的各个查看器元素
+     （.text-view / .pdf-scroll / .office-view / .image-stage / .pdf-native）。
+     之前这里也是 overflow:auto，就形成了「双层滚动容器」——
+     外层抢走了滚动职责却滚不动（scrollHeight 远大于 clientHeight，
+     但 scrollTop 始终为 0），表现就是长文本、长 PDF 看不全、滚轮没反应。
+     只保留内层一个滚动容器即可彻底解决。 */
+  overflow: hidden;
+}
+
+/* 提示 / 错误信息块 */
+.pv-message {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  padding: 30px;
+  text-align: center;
+  color: #4a5058;
+  font-size: 13px;
+  line-height: 1.7;
+  background: #fff;
+}
+
+.pv-message svg {
+  width: 58px;
+  height: 58px;
+  opacity: .35;
+}
+
+.pv-message .pv-msg-text {
+  max-width: 520px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.pv-message .pv-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+/* ==========================================================================
+   图片查看器
+   ========================================================================== */
+
+.image-stage {
+  width: 100%;
+  height: 100%;
+  overflow: auto;
+  background:
+    linear-gradient(45deg, #e9ebee 25%, transparent 25%) -8px 0,
+    linear-gradient(-45deg, #e9ebee 25%, transparent 25%) -8px 0,
+    linear-gradient(45deg, transparent 75%, #e9ebee 75%),
+    linear-gradient(-45deg, transparent 75%, #e9ebee 75%);
+  background-size: 16px 16px;
+  background-position: 0 0, 0 8px, 8px -8px, -8px 0;
+  background-color: #f7f8f9;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: grab;
+}
+
+.image-stage.grabbing {
+  cursor: grabbing;
+}
+
+.image-stage img {
+  display: block;
+  max-width: none;
+  max-height: none;
+  transform-origin: center center;
+  image-rendering: auto;
+  box-shadow: 0 4px 22px rgba(0, 0, 0, .22);
+  background: #fff;
+  user-select: none;
+  -webkit-user-drag: none;
+  pointer-events: none;
+}
+
+/* ==========================================================================
+   PDF 阅读器（pdf.js）
+   ========================================================================== */
+
+.pdf-scroll {
+  width: 100%;
+  height: 100%;
+  overflow: auto;
+  background: #525659;
+  padding: 16px 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+}
+
+/* PDF 区域是深色背景，滚动条也要用深色配色，否则看不见 */
+.pdf-scroll::-webkit-scrollbar {
+  width: 16px;
+  height: 16px;
+}
+
+.pdf-scroll::-webkit-scrollbar-track {
+  background: #3c4043;
+}
+
+.pdf-scroll::-webkit-scrollbar-thumb {
+  background: #828a91;
+  border: 4px solid #3c4043;
+  border-radius: 8px;
+  min-height: 44px;
+}
+
+.pdf-scroll::-webkit-scrollbar-thumb:hover {
+  background: #a3abb2;
+}
+
+.pdf-page {
+  background: #fff;
+  box-shadow: 0 3px 14px rgba(0, 0, 0, .45);
+  display: block;
+  max-width: 100%;
+}
+
+.pdf-page canvas {
+  display: block;
+}
+
+.pdf-loading {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 12px;
+  color: #fff;
+  font-size: 13px;
+  background: rgba(40, 44, 48, .9);
+  z-index: 3;
+}
+
+.pdf-loading .spinner {
+  width: 30px;
+  height: 30px;
+  border: 3px solid rgba(255, 255, 255, .25);
+  border-top-color: #4cc2ff;
+  border-radius: 50%;
+  animation: spin .8s linear infinite;
+}
+
+.pdf-progress {
+  width: 200px;
+  height: 4px;
+  background: rgba(255, 255, 255, .2);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.pdf-progress i {
+  display: block;
+  height: 100%;
+  width: 0;
+  background: #4cc2ff;
+  transition: width .15s;
+}
+
+/* 浏览器内置 PDF 阅读器（pdf.js 不可用时的兜底方案） */
+.pdf-native {
+  width: 100%;
+  height: 100%;
+  border: 0;
+  display: block;
+}
+
+/* ==========================================================================
+   文本查看器
+   ========================================================================== */
+
+.text-view {
+  width: 100%;
+  height: 100%;
+  overflow: auto;
+  background: #fff;
+  margin: 0;
+}
+
+.text-view pre {
+  margin: 0;
+  padding: 14px 16px;
+  font-family: "Cascadia Mono", Consolas, "Courier New", monospace;
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: #1f242a;
+  white-space: pre;
+  tab-size: 4;
+  user-select: text;
+}
+
+.text-view.wrap pre {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* 带行号的显示 */
+.text-view.with-lines {
+  display: flex;
+  align-items: flex-start;
+}
+
+.text-lines {
+  flex: 0 0 auto;
+  padding: 14px 8px 14px 12px;
+  text-align: right;
+  font-family: "Cascadia Mono", Consolas, "Courier New", monospace;
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: #a8adb5;
+  background: #fafbfc;
+  border-right: 1px solid #eef0f3;
+  user-select: none;
+  position: sticky;
+  left: 0;
+}
+
+/* ==========================================================================
+   音视频播放器
+   ========================================================================== */
+
+.media-stage {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 18px;
+  background: #101214;
+  padding: 20px;
+}
+
+.media-stage video {
+  max-width: 100%;
+  max-height: 100%;
+  background: #000;
+  outline: none;
+}
+
+.media-stage audio {
+  width: min(620px, 100%);
+}
+
+.media-info {
+  color: #b9bfc7;
+  font-size: 12.5px;
+  text-align: center;
+  line-height: 1.7;
+  max-width: 620px;
+  word-break: break-all;
+}
+
+.media-info .mi-name {
+  color: #fff;
+  font-size: 14px;
+  margin-bottom: 4px;
+}
+
+/* 不支持播放时的提示 */
+.media-fallback {
+  color: #d8dce1;
+  font-size: 13px;
+  text-align: center;
+  line-height: 1.8;
+  max-width: 560px;
+}
+
+/* ==========================================================================
+   Office 降级预览（后端 office.py 生成 HTML 片段，这里负责排版）
+   ========================================================================== */
+
+.office-view {
+  width: 100%;
+  height: 100%;
+  overflow: auto;
+  background: #f3f4f6;
+  padding: 18px;
+  user-select: text;
+}
+
+.office-note {
+  max-width: 900px;
+  margin: 0 auto 12px;
+  padding: 8px 12px;
+  background: #fff8e6;
+  border: 1px solid #f2dfae;
+  border-radius: 4px;
+  color: #8a6100;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+/* ---- Word 文档 ---- */
+.ox-doc {
+  max-width: 900px;
+  margin: 0 auto;
+  background: #fff;
+  padding: 34px 44px;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, .12);
+  font-size: 14px;
+  line-height: 1.85;
+  color: #1f242a;
+  font-family: "Microsoft YaHei", "Segoe UI", sans-serif;
+}
+
+.ox-doc h1 { font-size: 24px; margin: 20px 0 12px; }
+.ox-doc h2 { font-size: 20px; margin: 18px 0 10px; }
+.ox-doc h3 { font-size: 17px; margin: 16px 0 8px; }
+.ox-doc h4,
+.ox-doc h5,
+.ox-doc h6 { font-size: 15px; margin: 14px 0 8px; }
+
+.ox-doc h1:first-child,
+.ox-doc h2:first-child,
+.ox-doc p:first-child {
+  margin-top: 0;
+}
+
+.ox-doc p {
+  margin: 8px 0;
+}
+
+.ox-doc .ox-empty {
+  margin: 8px 0;
+}
+
+.ox-doc .ox-truncated {
+  color: #b26a00;
+  font-style: italic;
+  text-align: center;
+  margin: 18px 0;
+}
+
+/* ---- 表格（Word 表格与 Excel 共用）---- */
+.ox-table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 12px 0;
+  font-size: 13px;
+}
+
+.ox-table td {
+  border: 1px solid #cfd4da;
+  padding: 6px 10px;
+  vertical-align: top;
+  word-break: break-word;
+}
+
+.ox-table tr:first-child td {
+  background: #f5f7f9;
+  font-weight: 600;
+}
+
+/* Excel 工作表：内容宽时横向滚动 */
+.ox-xlsx {
+  max-width: 100%;
+}
+
+.ox-sheet-wrap {
+  background: #fff;
+  margin: 0 auto 20px;
+  padding: 16px 18px;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, .12);
+  max-width: 1100px;
+  overflow-x: auto;
+}
+
+.ox-sheet-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: #1f242a;
+  margin-bottom: 10px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid #e6e8ec;
+}
+
+.ox-table.ox-sheet {
+  font-size: 12.5px;
+  white-space: nowrap;
+}
+
+.ox-table.ox-sheet td {
+  padding: 4px 10px;
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ---- PPT 幻灯片 ---- */
+.ox-pptx {
+  max-width: 960px;
+  margin: 0 auto;
+}
+
+.ox-slide {
+  background: #fff;
+  margin-bottom: 18px;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, .12);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.ox-slide-head {
+  padding: 8px 16px;
+  background: #f5f7f9;
+  border-bottom: 1px solid #e6e8ec;
+  font-size: 12px;
+  color: #5a6169;
+}
+
+.ox-slide-body {
+  padding: 22px 26px;
+  min-height: 120px;
+  aspect-ratio: 16 / 9;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 12px;
+}
+
+.ox-pptx-block {
+  font-size: 15px;
+  line-height: 1.75;
+  color: #1f242a;
+  padding-left: 16px;
+  position: relative;
+}
+
+.ox-pptx-block::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 9px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--accent, #0a6ad6);
+}
+
+.ox-pptx-empty {
+  color: var(--text-weak, #9096a0);
+  font-size: 13px;
+  text-align: center;
+}
+
+.ox-truncated {
+  color: #b26a00;
+  font-style: italic;
+  text-align: center;
+  padding: 10px;
+}
+
+/* ==========================================================================
+   压缩包信息视图
+   ========================================================================== */
+
+.archive-view {
+  padding: 26px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  color: #2b3038;
+  text-align: center;
+}
+
+.archive-view .ar-icon {
+  width: 92px;
+  height: 92px;
+  opacity: .9;
+}
+
+.archive-view .ar-name {
+  font-size: 15px;
+  font-weight: 600;
+  word-break: break-all;
+  max-width: 520px;
+}
+
+.archive-view .ar-meta {
+  font-size: 12.5px;
+  color: var(--text-dim);
+  line-height: 1.9;
+}
+
+.archive-view .ar-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 6px;
+}

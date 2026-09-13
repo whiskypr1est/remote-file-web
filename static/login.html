@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="robots" content="noindex, nofollow">
+  <title>登录 · 远程文件管理</title>
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/css/login.css">
+</head>
+<body>
+
+  <!-- 背景 -->
+  <div class="lock-bg"></div>
+
+  <!-- 左上角时钟（仿 Windows 锁屏） -->
+  <div class="lock-clock">
+    <div class="lock-time" id="clockTime">--:--</div>
+    <div class="lock-date" id="clockDate">正在获取时间…</div>
+  </div>
+
+  <!-- 点击任意位置继续 -->
+  <div class="lock-hint" id="lockHint">点击任意位置继续</div>
+
+  <!-- 登录面板 -->
+  <div class="login-panel" id="loginPanel" hidden>
+    <div class="login-card">
+
+      <!-- 头像 -->
+      <div class="avatar">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M12 12a5 5 0 1 0 0-10 5 5 0 0 0 0 10zm0 2c-4.42 0-8 2.24-8 5v1h16v-1c0-2.76-3.58-5-8-5z"/>
+        </svg>
+      </div>
+
+      <div class="login-user">登录到远程文件管理</div>
+
+      <form id="loginForm" autocomplete="off" novalidate>
+        <div class="field">
+          <label for="username">用户名</label>
+          <input type="text" id="username" name="username" value="admin"
+                 autocomplete="username" spellcheck="false">
+        </div>
+
+        <div class="field">
+          <label for="password">密码</label>
+          <div class="pw-row">
+            <input type="password" id="password" name="password"
+                   autocomplete="current-password" placeholder="请输入密码">
+            <button type="submit" class="pw-go" id="loginBtn" title="登录">→</button>
+          </div>
+        </div>
+
+        <div class="login-error" id="loginError" role="alert" aria-live="polite"></div>
+      </form>
+
+      <div class="login-foot" id="serverHost">服务器</div>
+    </div>
+  </div>
+
+  <!-- 右下角装饰图标 -->
+  <div class="lock-corner" aria-hidden="true">
+    <svg viewBox="0 0 24 24"><path d="M12 21l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54z"/></svg>
+    <svg viewBox="0 0 24 24"><path d="M2 22h20V2zM17 17H7v-3h10zm0-5H7V9h10z"/></svg>
+  </div>
+
+  <!-- 启动遮罩：避免登录状态判定期间闪烁 -->
+  <div class="boot-mask" id="bootMask">
+    <div class="spinner"></div>
+    <span>正在检查登录状态…</span>
+  </div>
+
+  <script src="/static/js/login.js"></script>
+</body>
+</html>

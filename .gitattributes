@@ -1,0 +1,48 @@
+# ===========================================================================
+#  远程文件管理 —— 换行符与文件类型约定
+#
+#  为什么需要它：本项目工作区里换行符原本是**混用**的
+#  （app.py 是 CRLF，fileweb/*.py 与前端全是 LF），而 core.autocrlf
+#  又因机器而异。不固定下来的话，同一个文件在不同人那里 diff 会整篇飘红。
+# ===========================================================================
+
+# 文本文件交给 Git 自动识别，仓库内统一以 LF 存储；
+# 检出时用各人本地的 core.autocrlf 规则还原，不强加平台偏好。
+* text=auto
+
+# ---- 必须是 CRLF 的类型 -----------------------------------------------
+# Windows 批处理的解析对换行敏感（跳转标签、goto 在纯 LF 下可能出错），
+# 无论谁在哪里检出都必须是 CRLF。
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# ---- 必须是 LF 的类型 --------------------------------------------------
+*.sh  text eol=lf
+*.py  text eol=lf
+*.js  text eol=lf
+*.mjs text eol=lf
+*.css text eol=lf
+
+# ---- 二进制：禁止任何换行转换 -----------------------------------------
+*.exe   binary
+*.dll   binary
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.ico   binary
+*.bmp   binary
+*.webp  binary
+*.ttf   binary
+*.otf   binary
+*.woff  binary
+*.woff2 binary
+*.zip   binary
+*.7z    binary
+*.rar   binary
+*.pdf   binary
+
+# ---- 内置第三方库：不参与 diff，也不计入 GitHub 语言统计 -------------
+# 否则 pdf.js / xterm.js / CodeMirror 会把仓库显示成「几乎全是 JavaScript」，
+# 掩盖这个项目其实以 Python 后端为主的事实。
+static/vendor/** -diff linguist-vendored

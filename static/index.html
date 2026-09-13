@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="robots" content="noindex, nofollow">
+  <title>远程文件管理</title>
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+
+  <!-- winbox.js 窗口系统（本地托管，无需外网） -->
+  <link rel="stylesheet" href="/static/vendor/winbox.min.css">
+  <!-- xterm.js 终端模拟器：命令提示符窗口的内容由它渲染（必须先于应用样式加载，
+       便于 terminal.css 在需要时覆盖它的默认外观） -->
+  <link rel="stylesheet" href="/static/vendor/xterm/xterm.css">
+  <!-- CodeMirror 5：编辑器窗口的语法高亮。同样是先于应用样式加载，
+       让 editor.css 可以覆盖它的默认外观 -->
+  <link rel="stylesheet" href="/static/vendor/codemirror/lib/codemirror.css">
+  <link rel="stylesheet" href="/static/vendor/codemirror/theme/eclipse.css">
+  <!-- 应用样式 -->
+  <link rel="stylesheet" href="/static/css/desktop.css">
+  <link rel="stylesheet" href="/static/css/explorer.css">
+  <link rel="stylesheet" href="/static/css/preview.css">
+  <link rel="stylesheet" href="/static/css/terminal.css">
+  <link rel="stylesheet" href="/static/css/editor.css">
+</head>
+<body>
+
+<div class="desktop" id="desktop">
+
+  <!-- 桌面壁纸 -->
+  <div class="wallpaper" id="wallpaper"></div>
+
+  <!-- 桌面图标 -->
+  <div class="desktop-icons" id="desktopIcons"></div>
+
+  <!-- 窗口层：winbox 窗口都会挂到这里 -->
+  <div class="window-layer" id="windowLayer"></div>
+
+  <!-- 开始菜单 -->
+  <div class="start-menu" id="startMenu"></div>
+
+  <!-- 托盘弹出面板 -->
+  <div class="tray-popup" id="trayPopup"></div>
+
+  <!-- 任务栏 -->
+  <div class="taskbar" id="taskbar">
+
+    <!-- 开始按钮 -->
+    <div class="start-btn" id="startBtn" title="开始">
+      <span class="logo"><i></i><i></i><i></i><i></i></span>
+    </div>
+
+    <!-- 已打开窗口的任务栏按钮（由 wins.js 维护） -->
+    <div class="task-items" id="taskItems"></div>
+
+    <!-- 系统托盘 -->
+    <div class="tray">
+
+      <div class="tray-item server-ip" id="trayServer" title="当前访问地址">
+        <span class="tray-ico">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M12 2.6A9.4 9.4 0 1 0 21.4 12 9.4 9.4 0 0 0 12 2.6zm7.1 8.2h-3.4a15 15 0 0 0-1.1-5.2 7.3 7.3 0 0 1 4.5 5.2zM12 4.8a13 13 0 0 1 1.6 6H10.4A13 13 0 0 1 12 4.8zM4.9 13.2h3.4a15 15 0 0 1 1.1 5.2 7.3 7.3 0 0 1-4.5-5.2zm3.4-2.2H4.9a7.3 7.3 0 0 1 4.5-5.2 15 15 0 0 0-1.1 5.2zm3.7 8.2a13 13 0 0 1-1.6-6h3.2a13 13 0 0 1-1.6 6zm2.6-.8a15 15 0 0 0 1.1-5.2h3.4a7.3 7.3 0 0 1-4.5 5.2z"/>
+          </svg>
+        </span>
+        <span id="trayIp">--</span>
+      </div>
+
+      <div class="tray-clock" id="trayClock" title="单击查看服务器信息">
+        <span class="clock-time" id="clockTime">--:--</span>
+        <span class="clock-date" id="clockDate">----/--/--</span>
+      </div>
+
+      <div class="show-desktop" id="showDesktop" title="显示桌面"></div>
+    </div>
+  </div>
+</div>
+
+<!-- 启动遮罩 -->
+<div class="boot-screen" id="bootScreen">
+  <svg class="boot-logo" viewBox="0 0 24 24" aria-hidden="true" fill="#4cc2ff">
+    <path d="M2.5 6.2A2.2 2.2 0 0 1 4.7 4h3.9a2 2 0 0 1 1.6.8l1.2 1.6h7.9a2.2 2.2 0 0 1 2.2 2.2v9.2a2.2 2.2 0 0 1-2.2 2.2H4.7a2.2 2.2 0 0 1-2.2-2.2z"/>
+    <path d="M2.5 8.6h19v9.2a2.2 2.2 0 0 1-2.2 2.2H4.7a2.2 2.2 0 0 1-2.2-2.2z" fill="#ffcf5c"/>
+  </svg>
+  <div class="boot-text" id="bootText">正在启动…</div>
+</div>
+
+<!-- winbox.js：窗口系统核心（必须用普通脚本，它会挂到 window.WinBox） -->
+<script src="/static/vendor/winbox.min.js"></script>
+<!-- xterm.js 终端模拟器（UMD，会把 Terminal 挂到全局）。
+     同样必须用普通脚本、且必须在 main.js 之前加载：
+     终端窗口是在用户点开时才创建的，那时代码已经跑起来了，
+     ES 模块里没法再 await 一个 <script>，所以只能靠这里先备好。 -->
+<script src="/static/vendor/xterm/xterm.js"></script>
+<!-- addon-fit：按容器尺寸自动计算行列（UMD，全局 FitAddon.FitAddon） -->
+<script src="/static/vendor/xterm/addon-fit.js"></script>
+<!-- CodeMirror 5 编辑器（UMD，会把 CodeMirror 挂到全局）。
+     和 xterm.js 同理：必须用普通脚本、且必须在 main.js 之前加载完 ——
+     编辑器窗口是用户点开时才创建的，那时代码已经在跑了，
+     ES 模块里没法再 await 一个 <script>，只能靠这里先备好。
+
+     ★ mode 的加载顺序不能乱，分三类：
+       1. 无依赖的 mode（xml / javascript / css / 各语言 mode）先上；
+       2. meta.js 只是「按文件名猜 mode」的查找表，markdown 会用到它；
+       3. htmlmixed 与 markdown 最后 —— htmlmixed 依赖 xml+javascript+css，
+          而 markdown 在**定义时**就会去要一次 text/html 模式，所以 htmlmixed
+          必须排在 markdown 之前；反过来 xml 也会注册 text/html，
+          若让 xml 后加载就会把 htmlmixed 顶掉，markdown 里的 HTML 块随之失效。
+     ★ 顺序错了不会报错，只会安静地不高亮，所以这里按依赖手动排好，
+       并和 tools/fetch_vendor.py 的 CODEMIRROR_MODES 保持一致。 -->
+<script src="/static/vendor/codemirror/lib/codemirror.js"></script>
+<script src="/static/vendor/codemirror/mode/properties/properties.js"></script>
+<script src="/static/vendor/codemirror/mode/shell/shell.js"></script>
+<script src="/static/vendor/codemirror/mode/powershell/powershell.js"></script>
+<script src="/static/vendor/codemirror/mode/python/python.js"></script>
+<script src="/static/vendor/codemirror/mode/javascript/javascript.js"></script>
+<script src="/static/vendor/codemirror/mode/clike/clike.js"></script>
+<script src="/static/vendor/codemirror/mode/css/css.js"></script>
+<script src="/static/vendor/codemirror/mode/xml/xml.js"></script>
+<script src="/static/vendor/codemirror/mode/yaml/yaml.js"></script>
+<script src="/static/vendor/codemirror/mode/sql/sql.js"></script>
+<script src="/static/vendor/codemirror/mode/meta.js"></script>
+<script src="/static/vendor/codemirror/mode/markdown/markdown.js"></script>
+<script src="/static/vendor/codemirror/mode/htmlmixed/htmlmixed.js"></script>
+<!-- 应用入口（ES 模块） -->
+<script type="module" src="/static/js/main.js"></script>
+
+</body>
+</html>

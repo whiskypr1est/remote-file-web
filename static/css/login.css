@@ -1,0 +1,337 @@
+/* ==========================================================================
+   登录页样式 —— 仿 Windows 10 锁屏 / 登录界面
+   ========================================================================== */
+
+* {
+  box-sizing: border-box;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  overflow: hidden;
+  font-family: "Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI", system-ui, -apple-system, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ---- 背景：模拟 Windows 10 默认蓝色主题壁纸 ---- */
+.lock-bg {
+  position: fixed;
+  inset: 0;
+  background:
+    radial-gradient(circle at 20% 26%, rgba(140, 200, 255, .55), transparent 42%),
+    radial-gradient(circle at 76% 14%, rgba(90, 160, 255, .45), transparent 46%),
+    radial-gradient(circle at 66% 82%, rgba(24, 86, 200, .60), transparent 52%),
+    radial-gradient(circle at 12% 88%, rgba(20, 60, 150, .55), transparent 50%),
+    linear-gradient(158deg, #0a2350 0%, #124a9e 36%, #0d6fd8 66%, #06224f 100%);
+  overflow: hidden;
+}
+
+/* 模拟 Windows 壁纸上的光线纹理 */
+.lock-bg::before {
+  content: "";
+  position: absolute;
+  inset: -20%;
+  background:
+    conic-gradient(from 200deg at 30% 40%, rgba(255, 255, 255, .10), transparent 30%),
+    conic-gradient(from 20deg at 72% 62%, rgba(120, 200, 255, .10), transparent 34%);
+  filter: blur(38px);
+  animation: bgDrift 42s ease-in-out infinite alternate;
+}
+
+/* 暗角，让文字更清晰 */
+.lock-bg::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(ellipse at center, transparent 42%, rgba(0, 0, 0, .38) 100%);
+  pointer-events: none;
+}
+
+@keyframes bgDrift {
+  from { transform: translate3d(-2%, -1%, 0) scale(1.02); }
+  to   { transform: translate3d(2%, 2%, 0) scale(1.08); }
+}
+
+/* ---- 左上角大时钟 ---- */
+.lock-clock {
+  position: absolute;
+  top: 8vh;
+  left: 7vw;
+  color: #fff;
+  text-shadow: 0 2px 18px rgba(0, 0, 0, .45);
+  user-select: none;
+  z-index: 2;
+}
+
+.lock-time {
+  font-size: clamp(56px, 9vw, 128px);
+  font-weight: 200;
+  line-height: 1;
+  letter-spacing: 2px;
+  font-variant-numeric: tabular-nums;
+}
+
+.lock-date {
+  margin-top: 10px;
+  font-size: clamp(16px, 1.7vw, 28px);
+  font-weight: 300;
+  opacity: .92;
+  letter-spacing: 1px;
+}
+
+/* ---- 点击继续提示 ---- */
+.lock-hint {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  padding-bottom: 12vh;
+  color: rgba(255, 255, 255, .88);
+  font-size: 15px;
+  letter-spacing: 2px;
+  z-index: 2;
+  cursor: pointer;
+  animation: hintPulse 2.6s ease-in-out infinite;
+}
+
+@keyframes hintPulse {
+  0%, 100% { opacity: .55; }
+  50%      { opacity: 1; }
+}
+
+.lock-hint.hidden {
+  display: none;
+}
+
+/* ---- 登录面板 ---- */
+.login-panel {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  color: #fff;
+  opacity: 0;
+  transform: translateY(26px);
+  transition: opacity .38s ease, transform .38s cubic-bezier(.22, .61, .36, 1);
+}
+
+.login-panel.show {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+/* Windows 登录界面的"亚克力"效果 */
+.login-card {
+  width: min(400px, 88vw);
+  padding: 34px 32px 26px;
+  border-radius: 8px;
+  background: rgba(20, 30, 48, .42);
+  border: 1px solid rgba(255, 255, 255, .16);
+  box-shadow: 0 22px 60px rgba(0, 0, 0, .45), inset 0 1px 0 rgba(255, 255, 255, .10);
+  backdrop-filter: blur(22px) saturate(150%);
+  -webkit-backdrop-filter: blur(22px) saturate(150%);
+  text-align: center;
+}
+
+.avatar {
+  width: 92px;
+  height: 92px;
+  margin: 0 auto 16px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, .14);
+  border: 2px solid rgba(255, 255, 255, .40);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 6px 22px rgba(0, 0, 0, .30);
+}
+
+.avatar svg {
+  width: 54px;
+  height: 54px;
+  fill: rgba(255, 255, 255, .92);
+}
+
+.login-user {
+  font-size: 22px;
+  font-weight: 400;
+  margin-bottom: 20px;
+  letter-spacing: 1px;
+}
+
+/* 输入行：仿 Windows 的下划线输入框 */
+.field {
+  position: relative;
+  margin-bottom: 14px;
+  text-align: left;
+}
+
+.field label {
+  display: block;
+  font-size: 12px;
+  opacity: .72;
+  margin-bottom: 6px;
+  letter-spacing: .5px;
+}
+
+.field input {
+  width: 100%;
+  height: 38px;
+  padding: 0 12px;
+  font-size: 14px;
+  color: #fff;
+  background: rgba(255, 255, 255, .10);
+  border: 1px solid rgba(255, 255, 255, .28);
+  border-bottom: 2px solid rgba(255, 255, 255, .55);
+  border-radius: 4px 4px 0 0;
+  outline: none;
+  transition: background .16s, border-color .16s;
+  font-family: inherit;
+}
+
+.field input::placeholder {
+  color: rgba(255, 255, 255, .45);
+}
+
+.field input:focus {
+  background: rgba(255, 255, 255, .18);
+  border-bottom-color: #4cc2ff;
+}
+
+/* 密码行 + 提交按钮 */
+.pw-row {
+  display: flex;
+  gap: 8px;
+  align-items: stretch;
+}
+
+.pw-row input {
+  flex: 1;
+}
+
+.pw-go {
+  width: 46px;
+  height: 38px;
+  flex: 0 0 46px;
+  border: 1px solid rgba(255, 255, 255, .30);
+  border-bottom: 2px solid rgba(255, 255, 255, .55);
+  border-radius: 4px 4px 0 0;
+  background: rgba(255, 255, 255, .16);
+  color: #fff;
+  font-size: 19px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background .16s, transform .1s;
+}
+
+.pw-go:hover:not(:disabled) {
+  background: rgba(76, 194, 255, .55);
+}
+
+.pw-go:active:not(:disabled) {
+  transform: scale(.95);
+}
+
+.pw-go:disabled {
+  opacity: .5;
+  cursor: default;
+}
+
+/* 错误提示 */
+.login-error {
+  min-height: 34px;
+  margin-top: 12px;
+  font-size: 13px;
+  line-height: 1.45;
+  color: #ffb4b4;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.login-error.show {
+  animation: shake .42s cubic-bezier(.36, .07, .19, .97);
+}
+
+@keyframes shake {
+  10%, 90% { transform: translateX(-2px); }
+  20%, 80% { transform: translateX(4px); }
+  30%, 50%, 70% { transform: translateX(-7px); }
+  40%, 60% { transform: translateX(7px); }
+}
+
+/* 面板底部：服务器地址 */
+.login-foot {
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid rgba(255, 255, 255, .14);
+  font-size: 12px;
+  opacity: .68;
+  letter-spacing: .5px;
+}
+
+/* ---- 右下角功能图标（纯装饰，还原 Windows 锁屏） ---- */
+.lock-corner {
+  position: absolute;
+  right: 26px;
+  bottom: 22px;
+  display: flex;
+  gap: 18px;
+  z-index: 4;
+  opacity: .78;
+}
+
+.lock-corner svg {
+  width: 20px;
+  height: 20px;
+  fill: #fff;
+}
+
+/* ---- 加载中遮罩 ---- */
+.boot-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 9;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #0a1a33;
+  color: #fff;
+  font-size: 14px;
+  letter-spacing: 2px;
+  transition: opacity .3s;
+}
+
+.boot-mask.hidden {
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* Windows 风格的点状加载动画 */
+.spinner {
+  width: 26px;
+  height: 26px;
+  margin-right: 14px;
+  border: 3px solid rgba(255, 255, 255, .25);
+  border-top-color: #4cc2ff;
+  border-radius: 50%;
+  animation: spin .8s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* 小屏适配 */
+@media (max-height: 620px) {
+  .lock-clock { top: 5vh; }
+  .avatar { width: 68px; height: 68px; margin-bottom: 10px; }
+  .avatar svg { width: 40px; height: 40px; }
+  .login-card { padding: 22px 24px 16px; }
+}

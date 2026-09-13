@@ -1,0 +1,864 @@
+/* ==========================================================================
+   文件资源管理器样式 —— 仿 Windows 10 资源管理器
+   ========================================================================== */
+
+.explorer {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  background: #fff;
+  font-size: 13px;
+  color: var(--text);
+}
+
+/* ==========================================================================
+   工具栏（后退 / 前进 / 向上 / 刷新 + 地址栏 + 视图切换）
+   ========================================================================== */
+
+.exp-toolbar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  background: #f7f8f9;
+  border-bottom: 1px solid #e6e8ec;
+}
+
+.exp-nav {
+  display: flex;
+  gap: 1px;
+  flex: 0 0 auto;
+}
+
+.nav-btn {
+  width: 30px;
+  height: 28px;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  background: transparent;
+  cursor: default;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  transition: background .1s, border-color .1s;
+}
+
+.nav-btn svg {
+  width: 16px;
+  height: 16px;
+  fill: #3a4048;
+}
+
+.nav-btn:hover:not(:disabled) {
+  background: #e8edf4;
+  border-color: #cfd8e3;
+}
+
+.nav-btn:active:not(:disabled) {
+  background: #dbe5f1;
+}
+
+.nav-btn:disabled {
+  opacity: .32;
+}
+
+/* ---- 地址栏 ---- */
+.exp-address {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  height: 28px;
+  min-width: 120px;
+  background: #fff;
+  border: 1px solid #bfc6ce;
+  border-radius: 3px;
+  padding: 0 4px 0 8px;
+  gap: 6px;
+  transition: border-color .12s, box-shadow .12s;
+}
+
+.exp-address:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(10, 106, 214, .16);
+}
+
+.exp-address .addr-ico {
+  width: 15px;
+  height: 15px;
+  flex: 0 0 15px;
+  display: flex;
+  align-items: center;
+}
+
+.exp-address .addr-ico svg {
+  width: 100%;
+  height: 100%;
+  fill: #5a6169;
+}
+
+/* 面包屑：平时显示，点击后切换成可编辑输入框 */
+.exp-crumbs {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  overflow: hidden;
+  white-space: nowrap;
+  height: 100%;
+}
+
+.crumb {
+  padding: 2px 6px;
+  border-radius: 2px;
+  cursor: default;
+  color: #2b3038;
+  flex: 0 0 auto;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.crumb:hover {
+  background: #e8f0fb;
+}
+
+.crumb.current {
+  font-weight: 600;
+}
+
+.crumb-sep {
+  color: #9aa1aa;
+  padding: 0 1px;
+  flex: 0 0 auto;
+  font-size: 11px;
+}
+
+.addr-input {
+  flex: 1 1 auto;
+  height: 24px;
+  border: none;
+  outline: none;
+  font-size: 13px;
+  font-family: inherit;
+  color: #1b1b1b;
+  background: transparent;
+  padding: 0 4px;
+  display: none;
+  user-select: text;
+}
+
+.exp-address.editing .exp-crumbs {
+  display: none;
+}
+
+.exp-address.editing .addr-input {
+  display: block;
+}
+
+.addr-go {
+  width: 24px;
+  height: 22px;
+  flex: 0 0 24px;
+  border: none;
+  background: transparent;
+  cursor: default;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  border-radius: 2px;
+}
+
+.exp-address.editing .addr-go {
+  display: flex;
+}
+
+.addr-go:hover {
+  background: #e8f0fb;
+}
+
+.addr-go svg {
+  width: 14px;
+  height: 14px;
+  fill: #3a4048;
+}
+
+/* ---- 视图切换 ---- */
+.exp-view-toggle {
+  display: flex;
+  gap: 1px;
+  flex: 0 0 auto;
+  border: 1px solid #d3d8de;
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.view-btn {
+  width: 32px;
+  height: 26px;
+  border: none;
+  background: #fff;
+  cursor: default;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  transition: background .1s;
+}
+
+.view-btn svg {
+  width: 15px;
+  height: 15px;
+  fill: #3a4048;
+}
+
+.view-btn:hover {
+  background: #eef2f7;
+}
+
+.view-btn.active {
+  background: #d6e6fa;
+}
+
+/* ==========================================================================
+   操作栏（新建 / 上传 / 下载 / 重命名 / 删除）
+   ========================================================================== */
+
+.exp-actions {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  background: #fbfbfc;
+  border-bottom: 1px solid #e6e8ec;
+  flex-wrap: wrap;
+}
+
+.act-btn {
+  height: 28px;
+  padding: 0 12px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  font-family: inherit;
+  color: #23272d;
+  background: #fff;
+  border: 1px solid #d3d8de;
+  border-radius: 3px;
+  cursor: default;
+  transition: background .1s, border-color .1s;
+  white-space: nowrap;
+}
+
+.act-btn svg {
+  width: 15px;
+  height: 15px;
+  fill: #4a5058;
+}
+
+.act-btn:hover:not(:disabled) {
+  background: #eef3fa;
+  border-color: #b9c6d6;
+}
+
+.act-btn:active:not(:disabled) {
+  background: #dde8f6;
+}
+
+.act-btn:disabled {
+  opacity: .42;
+}
+
+.act-btn.danger:hover:not(:disabled) {
+  background: #fdeced;
+  border-color: #e9a8ac;
+  color: var(--danger);
+}
+
+.act-btn.danger:hover:not(:disabled) svg {
+  fill: var(--danger);
+}
+
+.act-sep {
+  width: 1px;
+  height: 20px;
+  background: #e0e4e9;
+  margin: 0 3px;
+}
+
+.exp-actions .spacer {
+  flex: 1 1 auto;
+}
+
+/* 上传进度区 */
+.upload-panel {
+  flex: 0 0 auto;
+  border-bottom: 1px solid #e6e8ec;
+  background: #f4f8fe;
+  padding: 8px 12px;
+  display: none;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 132px;
+  overflow-y: auto;
+}
+
+.upload-panel.show {
+  display: flex;
+}
+
+.up-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+  color: #2b3038;
+}
+
+.up-name {
+  flex: 0 0 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.up-bar {
+  flex: 1 1 auto;
+  height: 6px;
+  background: #dde5ef;
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.up-bar i {
+  display: block;
+  height: 100%;
+  width: 0;
+  background: var(--accent);
+  border-radius: 3px;
+  transition: width .18s;
+}
+
+.up-text {
+  flex: 0 0 92px;
+  text-align: right;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.up-row.error .up-text { color: var(--danger); }
+.up-row.error .up-bar i { background: var(--danger); }
+.up-row.done .up-bar i { background: #107c10; }
+
+/* ==========================================================================
+   内容区
+   ========================================================================== */
+
+.exp-body {
+  flex: 1 1 auto;
+  position: relative;
+  overflow: auto;
+  background: #fff;
+  min-height: 0;
+}
+
+.exp-view {
+  display: none;
+  padding: 12px;
+}
+
+.exp-view.active {
+  display: block;
+}
+
+/* 拖拽上传提示 */
+.exp-body.dragover::after {
+  content: "松开鼠标即可上传到当前文件夹";
+  position: absolute;
+  inset: 8px;
+  border: 2px dashed var(--accent);
+  border-radius: 6px;
+  background: rgba(10, 106, 214, .06);
+  color: var(--accent);
+  font-size: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  z-index: 5;
+}
+
+/* ---- 图标视图 ---- */
+.exp-icons {
+  /* 必须默认隐藏：之前这里直接写 display:grid，
+     权重与 .exp-view{display:none} 相同但位置更靠后，把它覆盖掉了，
+     导致切到列表视图时图标视图依然挂在页面上（还残留着上一个目录的内容）。 */
+  display: none;
+  grid-template-columns: repeat(auto-fill, minmax(104px, 1fr));
+  gap: 4px;
+  align-content: start;
+}
+
+.exp-icons.active {
+  display: grid;
+}
+
+.icon-item {
+  padding: 8px 6px 6px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  cursor: default;
+  transition: background .1s, border-color .1s;
+  min-width: 0;
+}
+
+.icon-item:hover {
+  background: #eef4fc;
+  border-color: #cfe0f5;
+}
+
+.icon-item.selected {
+  background: #cfe4fb;
+  border-color: #8fbdf0;
+}
+
+.icon-item.hidden-file {
+  opacity: .62;
+}
+
+.icon-item .item-icon {
+  width: 64px;
+  height: 64px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  flex: 0 0 64px;
+}
+
+.icon-item .item-icon img {
+  max-width: 64px;
+  max-height: 64px;
+  object-fit: contain;
+  border-radius: 2px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, .18);
+  background: #fff;
+}
+
+.icon-item .item-icon svg {
+  width: 100%;
+  height: 100%;
+}
+
+/* 缩略图加载失败时回退到类型图标 */
+.icon-item .item-icon img.failed {
+  display: none;
+}
+
+.icon-item .item-name {
+  font-size: 12px;
+  line-height: 1.35;
+  text-align: center;
+  color: #22262c;
+  word-break: break-all;
+  max-height: 2.7em;
+  overflow: hidden;
+  width: 100%;
+}
+
+.icon-item.selected .item-name {
+  color: #10305c;
+}
+
+/* 重命名时的小输入框 */
+.item-rename {
+  width: 100%;
+  height: 22px;
+  font-size: 12px;
+  font-family: inherit;
+  border: 1px solid var(--accent);
+  border-radius: 2px;
+  padding: 0 4px;
+  outline: none;
+  text-align: center;
+  user-select: text;
+}
+
+/* ---- 详细列表视图 ---- */
+.exp-list {
+  padding: 0;
+}
+
+.exp-list table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+
+.exp-list thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: #fbfbfc;
+  border-bottom: 1px solid #e2e6ea;
+  border-right: 1px solid #eef0f3;
+  font-weight: 400;
+  font-size: 12px;
+  color: #4a5058;
+  text-align: left;
+  padding: 6px 10px;
+  cursor: default;
+  white-space: nowrap;
+  user-select: none;
+}
+
+.exp-list thead th:hover {
+  background: #eef2f7;
+}
+
+.exp-list thead th .th-inner {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.exp-list thead th .sort-arrow {
+  color: var(--accent);
+  font-size: 10px;
+}
+
+.exp-list tbody tr {
+  cursor: default;
+  height: 26px;
+}
+
+.exp-list tbody tr:nth-child(even) {
+  background: #fafbfc;
+}
+
+.exp-list tbody tr:hover {
+  background: #eef4fc;
+}
+
+.exp-list tbody tr.selected {
+  background: #cfe4fb;
+}
+
+.exp-list tbody tr.hidden-file {
+  opacity: .62;
+}
+
+.exp-list tbody td {
+  padding: 3px 10px;
+  border-bottom: 1px solid #f2f4f6;
+  font-size: 12.5px;
+  color: #2b3038;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: middle;
+}
+
+.exp-list td.col-name {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.exp-list td.col-name .li-icon {
+  width: 17px;
+  height: 17px;
+  flex: 0 0 17px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.exp-list td.col-name .li-icon svg {
+  width: 100%;
+  height: 100%;
+}
+
+.exp-list td.col-name .li-icon img {
+  max-width: 17px;
+  max-height: 17px;
+  object-fit: contain;
+}
+
+.exp-list td.col-name .li-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.exp-list td.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: #4a5058;
+}
+
+/* 列宽 */
+.exp-list th.c-name,  .exp-list td.c-name  { width: auto; }
+.exp-list th.c-mtime, .exp-list td.c-mtime { width: 148px; }
+.exp-list th.c-type,  .exp-list td.c-type  { width: 116px; }
+.exp-list th.c-size,  .exp-list td.c-size  { width: 104px; }
+
+/* ---- 空目录提示 ---- */
+.exp-empty {
+  position: absolute;
+  inset: 0;
+  display: none;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  color: var(--text-weak);
+  font-size: 13px;
+  pointer-events: none;
+}
+
+.exp-empty.show {
+  display: flex;
+}
+
+.exp-empty svg {
+  width: 62px;
+  height: 62px;
+  opacity: .32;
+}
+
+/* ==========================================================================
+   「此电脑」视图（显示各根目录 / 盘符）
+   ========================================================================== */
+
+.computer-view {
+  /* 同理：这里原来无条件 display:flex，会覆盖 .exp-view 的隐藏规则，
+     结果「此电脑」的驱动器列表在任何视图下都一直显示在底部。 */
+  display: none;
+  padding: 14px;
+  flex-direction: column;
+  gap: 14px;
+  overflow-y: auto;
+  height: 100%;
+}
+
+.computer-view.active {
+  display: flex;
+}
+
+.cv-group-title {
+  font-size: 12.5px;
+  color: #5a6169;
+  border-bottom: 1px solid #e6e8ec;
+  padding-bottom: 6px;
+  margin-bottom: 4px;
+}
+
+.cv-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 8px;
+}
+
+.cv-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  cursor: default;
+  transition: background .1s, border-color .1s;
+}
+
+.cv-item:hover {
+  background: #eef4fc;
+  border-color: #cfe0f5;
+}
+
+.cv-item.selected {
+  background: #cfe4fb;
+  border-color: #8fbdf0;
+}
+
+.cv-item .cv-icon {
+  width: 42px;
+  height: 42px;
+  flex: 0 0 42px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.cv-item .cv-icon svg {
+  width: 100%;
+  height: 100%;
+}
+
+.cv-item .cv-main {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.cv-item .cv-name {
+  font-size: 13px;
+  color: #22262c;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cv-item .cv-sub {
+  font-size: 11.5px;
+  color: var(--text-weak);
+  margin-top: 3px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cv-bar {
+  height: 4px;
+  background: #e6eaef;
+  border-radius: 2px;
+  margin-top: 6px;
+  overflow: hidden;
+}
+
+.cv-bar i {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  border-radius: 2px;
+}
+
+/* ==========================================================================
+   状态栏
+   ========================================================================== */
+
+.exp-status {
+  flex: 0 0 auto;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 12px;
+  background: #f7f8f9;
+  border-top: 1px solid #e6e8ec;
+  font-size: 12px;
+  color: #5a6169;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.exp-status .st-left,
+.exp-status .st-right {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.exp-status .st-item {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.exp-status .st-item svg {
+  width: 13px;
+  height: 13px;
+  fill: #7b828b;
+}
+
+/* 加载指示 */
+.exp-loading {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  overflow: hidden;
+  z-index: 6;
+  background: transparent;
+}
+
+.exp-loading.show::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, var(--accent), transparent);
+  animation: loadingSlide 1.1s linear infinite;
+}
+
+@keyframes loadingSlide {
+  from { transform: translateX(-100%); }
+  to   { transform: translateX(100%); }
+}
+
+/* 只读根目录的提示条 */
+.exp-readonly {
+  flex: 0 0 auto;
+  padding: 6px 12px;
+  background: #fff8e6;
+  border-bottom: 1px solid #f2dfae;
+  color: #8a6100;
+  font-size: 12px;
+  display: none;
+}
+
+.exp-readonly.show {
+  display: block;
+}
+
+/* ==========================================================================
+   复制 / 剪切 / 粘贴 与内部拖拽
+   ========================================================================== */
+
+/* 已剪切、等待粘贴的条目半透明显示（与 Windows 一致） */
+.icon-item.cut-pending,
+.exp-list tbody tr.cut-pending {
+  opacity: .45;
+}
+
+/*
+   内部拖拽的落点高亮。
+   注意：不要复用上面的 .dragover —— 那是「从资源管理器拖文件进来上传」的遮罩，
+   两者必须分开，否则内部拖拽会误显示成上传提示。
+*/
+.exp-body.drop-target::after {
+  content: "松开鼠标即可放到此处（按住 Ctrl 为复制）";
+  position: absolute;
+  inset: 8px;
+  border: 2px dashed var(--accent);
+  border-radius: 6px;
+  background: rgba(10, 106, 214, .06);
+  color: var(--accent);
+  font-size: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  z-index: 5;
+}
+
+/* 拖到某个文件夹上时只高亮那一行 */
+.icon-item.drop-target {
+  background: #d6e6fa;
+  border-color: var(--accent);
+}
+
+.exp-list tbody tr.drop-target {
+  background: #d6e6fa;
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}

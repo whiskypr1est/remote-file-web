@@ -1,0 +1,204 @@
+/* ==========================================================================
+   编辑器窗口样式（CodeMirror 5）
+   --------------------------------------------------------------------------
+   只负责「把编辑器正确地塞进窗口」这件事：
+     * 整个窗口是 flex 纵向布局 —— 工具条固定高度，编辑区吃掉剩下的高度；
+     * CodeMirror 是绝对定位地铺满宿主元素（.cm-editor-host），所以宿主元素
+       必须有确定的高度，链路上任何一层都不能塌成 0；
+     * 编辑区里的字体统一等宽，且和文本预览（.text-view pre）保持同一套字体，
+       免得同一个文件在预览和编辑里看起来是两个东西。
+
+   CodeMirror 自身的样式来自：
+     /static/vendor/codemirror/lib/codemirror.css  （骨架）
+     /static/vendor/codemirror/theme/eclipse.css    （配色）
+   这里只做适配和少量覆盖。
+   ========================================================================== */
+
+/* 窗口骨架：和 .preview 同构，所以 .preview-toolbar / .pv-btn / .pv-label
+   这些工具条样式可以直接复用（定义在 preview.css 里，两者同时加载） */
+.editor {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  background: #fff;
+  overflow: hidden;
+}
+
+/* 「未保存修改」的角标：工具条右侧的一个小圆点 */
+.editor .ed-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-right: 4px;
+  border-radius: 50%;
+  background: #e8a33d;
+  vertical-align: middle;
+}
+
+.editor .ed-dirty-label {
+  color: #b3701a;
+  font-weight: 600;
+}
+
+/* --------------------------------------------------------------------------
+   编辑区
+   -------------------------------------------------------------------------- */
+
+.editor-body {
+  flex: 1 1 auto;
+  position: relative;
+  min-height: 0;      /* 关键：不加这条，flex 子项会被内容撑破，编辑区就跑出窗口 */
+  overflow: hidden;
+  background: #fff;
+}
+
+/* CodeMirror 的宿主。CodeMirror 会在这里创建一个绝对定位的 .CodeMirror 铺满，
+   所以这一层必须是 position:relative 且有确定尺寸 */
+.cm-editor-host {
+  position: relative;
+  width: 100%;
+  height: 100%;
+}
+
+.cm-editor-host .CodeMirror {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  width: 100%;
+  height: 100%;
+  font-family: "Cascadia Mono", Consolas, "Courier New", monospace;
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: #1f242a;
+  background: #fff;
+}
+
+/* 行号槽：和文本预览里那份 .text-lines 的观感对齐 */
+.cm-editor-host .CodeMirror-gutters {
+  background: #fafbfc;
+  border-right: 1px solid #eef0f3;
+}
+
+.cm-editor-host .CodeMirror-linenumber {
+  color: #a8adb5;
+  padding: 0 8px 0 6px;
+}
+
+.cm-editor-host .CodeMirror-cursor {
+  border-left: 2px solid #2a6fd0;
+}
+
+.cm-editor-host .CodeMirror-selected {
+  background: #d7e6fa;
+}
+
+.cm-editor-host .CodeMirror-focused .CodeMirror-selected {
+  background: #cfe0f7;
+}
+
+/* 查找/替换与括号匹配用到的样式在 lib/codemirror.css 里，这里不重复定义 */
+
+/* tab 宽度、以及「超出窗口宽度时横向滚动」的表现与预览一致 */
+.cm-editor-host .CodeMirror-scroll {
+  /* CodeMirror 自己按内容撑开高度并接管滚动，这里不要再加 overflow */
+  outline: none;
+}
+
+/* --------------------------------------------------------------------------
+   不可编辑状态（截断的大文件）
+   -------------------------------------------------------------------------- */
+
+/* 用一层明显的提示把编辑器盖住，而不是只把按钮置灰 ——
+   这是防数据丢失的护栏，必须一眼能看见 */
+.editor-blocked {
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 28px;
+  text-align: center;
+  background: rgba(255, 255, 255, .95);
+}
+
+.editor-blocked .eb-icon {
+  width: 46px;
+  height: 46px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: #fdf1dc;
+  color: #b3701a;
+}
+
+.editor-blocked .eb-icon svg {
+  width: 26px;
+  height: 26px;
+  fill: #b3701a;
+}
+
+.editor-blocked .eb-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: #23272d;
+}
+
+.editor-blocked .eb-text {
+  max-width: 460px;
+  font-size: 12.5px;
+  line-height: 1.7;
+  color: #5a6169;
+}
+
+.editor-blocked .eb-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+/* --------------------------------------------------------------------------
+   只读预览（截断文件被强制只读时的观感）
+   -------------------------------------------------------------------------- */
+
+.cm-editor-host.is-readonly .CodeMirror {
+  background: #fbfbfc;
+}
+
+/* --------------------------------------------------------------------------
+   状态条
+   -------------------------------------------------------------------------- */
+
+.editor-status {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  height: 24px;
+  padding: 0 10px;
+  font-size: 11.5px;
+  color: #5a6169;
+  background: #f7f8f9;
+  border-top: 1px solid #e6e8ec;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.editor-status .es-grow {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.editor-status .es-item {
+  flex: 0 0 auto;
+}

@@ -1,0 +1,156 @@
+/* ==========================================================================
+   命令提示符窗口样式（xterm.js 版）
+   --------------------------------------------------------------------------
+   终端内容现在由 xterm.js 自己渲染（canvas），因此本文件只负责：
+     * 把窗口切成「工具栏 + 终端宿主」两块的 flex 布局
+     * 工具栏/状态栏的视觉，与预览窗口保持同一套（浅灰底、细边框、白底按钮）
+     * 给 xterm 的宿主一个确定尺寸（addon-fit 靠量它来算行列）
+     * 深色滚动条，避免在黑底上出现一条亮白条
+
+   字体与配色不再由 CSS 决定：xterm 用自己的 canvas 绘制，
+   fontFamily / theme 都在 terminal.js 的 Terminal 选项里设置。
+   ========================================================================== */
+
+.terminal {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  background: #0c0c0c;
+  overflow: hidden;
+}
+
+/* ---- 工具栏 ---- */
+.term-toolbar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  background: #f7f8f9;
+  border-bottom: 1px solid #e6e8ec;
+}
+
+.term-btn {
+  height: 27px;
+  padding: 0 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  font-size: 12.5px;
+  font-family: inherit;
+  color: #23272d;
+  background: #fff;
+  border: 1px solid #d3d8de;
+  border-radius: 3px;
+  cursor: default;
+  transition: background .1s, border-color .1s;
+  white-space: nowrap;
+}
+
+.term-btn:hover {
+  background: #eef3fa;
+  border-color: #b9c6d6;
+}
+
+.term-btn:active {
+  background: #e2ebf7;
+}
+
+/* 「中断」发出请求后短暂高亮，给用户一个「确实点到了」的反馈
+   （真正的结果由服务端的 interrupted 消息在终端里显示） */
+.term-btn.pending {
+  background: #fdf3e0;
+  border-color: #e0b061;
+}
+
+.term-btn-ico {
+  display: inline-flex;
+  align-items: center;
+}
+
+.term-btn-ico svg {
+  width: 14px;
+  height: 14px;
+  fill: #4a5058;
+}
+
+/* 会话状态靠右显示：连接状态 / 终端模式 / 超时 / 回滚行数 */
+.term-status {
+  margin-left: auto;
+  font-size: 12px;
+  color: #5a6169;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  /* 状态栏是 flex 项，给它一个最小宽度 0 才能在窗口很窄时正常省略号截断 */
+  min-width: 0;
+}
+
+.term-status.ok {
+  color: #1f8b4c;
+}
+
+/* 管道模式等需要提醒的状态：橙色，显眼但不刺眼 */
+.term-status.warn {
+  color: #b8791a;
+}
+
+/* ---- 终端宿主 ----
+   xterm 会把 .xterm 挂进这个容器，而 addon-fit 是量
+   「.xterm 的父节点」的尺寸来反算行列的，所以这里必须有确定宽高：
+   flex:1 拿到剩余高度，min-height:0 让它在内容撑高时还能收缩
+   （少了 min-height:0，flex 子项不会低于内容高度，滚动条就永远不出现）。 */
+.term-host {
+  flex: 1 1 auto;
+  min-height: 0;
+  position: relative;
+  overflow: hidden;
+  background: #0c0c0c;
+}
+
+/* 给终端留一点内边距。
+   注意 padding 必须加在 .xterm 自身而不是 .term-host 上：
+   addon-fit 会从「父节点高度」里减去「.xterm 元素的 padding」来算行数，
+   padding 放在宿主机上会导致算出的行列略微超出可视区域。 */
+.term-host .xterm {
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
+  padding: 4px 6px;
+}
+
+/* 深色滚动条，与终端底色一致 */
+.term-host .xterm-viewport {
+  background-color: transparent !important;
+  scrollbar-color: #3a3a3a #1a1a1a;
+  scrollbar-width: thin;
+}
+
+.term-host .xterm-viewport::-webkit-scrollbar {
+  width: 12px;
+  height: 12px;
+}
+
+.term-host .xterm-viewport::-webkit-scrollbar-track {
+  background: #1a1a1a;
+}
+
+.term-host .xterm-viewport::-webkit-scrollbar-thumb {
+  background: #3a3a3a;
+  border: 2px solid #1a1a1a;
+  border-radius: 6px;
+}
+
+.term-host .xterm-viewport::-webkit-scrollbar-thumb:hover {
+  background: #4d4d4d;
+}
+
+/* 说明（仅供后来者，无任何样式干预）：
+   IME「合成中、还没上屏」的预览由 xterm 画在 .xterm-helpers > .composition-view
+   这个覆盖层里，**不在** .xterm-rows 中 —— 所以合成期间从 .xterm-rows 里读不到
+   预览文本是正常现象，并不是没做预览。它的显隐完全由 xterm 通过
+   .composition-view / .composition-view.active 控制（xterm.css 里已自带该规则，
+   且会把预览摆到光标格子处），本项目无需、也不应插手。 */
