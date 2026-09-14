@@ -86,6 +86,48 @@ class Client:
         except Exception:  # noqa: BLE001 - 非 JSON 响应（例如 403 空体）
             return status, {"_raw": text}
 
+    def _send(self, req):
+        try:
+            with urllib.request.urlopen(req, timeout=120) as resp:
+                self._capture_cookie(resp.headers)
+                return resp.status, resp.headers, resp.read()
+        except urllib.error.HTTPError as exc:
+            self._capture_cookie(exc.headers)
+            return exc.code, exc.headers, exc.read()
+
+    def raw_post(self, path, payload: bytes, content_type="application/octet-stream"):
+        """
+        发**原始字节体**的 POST。
+
+        上传类接口收的是流而不是 JSON（见 routers/music.py 与 routers/fs.py），
+        用 json() 会把 body 编码成 JSON 字符串，测的就不是真实调用了。
+        """
+        hdrs = {"Content-Type": content_type}
+        if self.cookie:
+            hdrs["Cookie"] = self.cookie
+        if self.csrf:
+            hdrs["X-CSRF-Token"] = self.csrf
+
+        req = urllib.request.Request(self.base + path, data=payload, headers=hdrs, method="POST")
+        status, _headers, body = self._send(req)
+        try:
+            return status, json.loads(body.decode("utf-8", "replace"))
+        except Exception:  # noqa: BLE001
+            return status, {"_raw": body.decode("utf-8", "replace")}
+
+    def raw_get(self, path, headers=None):
+        """
+        发 GET 并回**原始字节**（以及响应头）。
+
+        音频/视频/Range 这类要按字节核对的地方用得上：json() 会把二进制
+        decode 成乱码，既看不到真实长度，也验不了 206 的分段内容。
+        """
+        hdrs = dict(headers or {})
+        if self.cookie:
+            hdrs["Cookie"] = self.cookie
+        req = urllib.request.Request(self.base + path, headers=hdrs, method="GET")
+        return self._send(req)
+
     # -- 认证 ---------------------------------------------------------------
 
     def login(self, username, password, headers=None):
@@ -108,54 +150,67 @@ class Client:
 
 
 # ---------------------------------------------------------------------------
-# ★ 「默认落在项目根目录」的状态文件
+# ★ 「默认落在项目根目录」的目录与文件
 # ---------------------------------------------------------------------------
-# 这几个配置项的共同点：默认值是**项目根目录下的一个裸文件名**，也就是
-# 真实部署正在用的那一份。用临时配置起的服务如果不把它们改到临时目录，
-# 就会写脏真实部署的数据。
+# 这几个配置项的共同点：默认值是**项目根目录下的一个相对路径**，也就是真实部署
+# 正在用的那一份。用临时配置起的服务如果不把它们改到临时目录，就会写脏真实部署。
 #
-# 本项目已经因为这个坑出过三次事故：
+# 本项目已经因为这个坑出过四次事故：
 #   1. config.json 被测试配置覆盖（端口变随机、口令被换，服务失联）；
 #   2. 真实 user_state.json 里出现了指向临时测试目录的窗口；
-#   3. 真实 desktop_shortcuts.json / audit.log.jsonl 被测试写入。
-# 所以做成一个公用函数 + 一条结构性守卫（见 test_multiuser_state.py 的
-# HarnessStatePathIsolationTests）：**新增一个这样的配置项时，
-# 守卫会先变红，逼你先把它加到这里**。
-STATE_PATH_KEYS = (
-    "user_state_path",
-    "desktop_shortcuts_path",
-    "audit.path",
-)
+#   3. 真实 desktop_shortcuts.json 被测试写入；
+#   4. 真实 audit.log.jsonl 被灌进测试的登录记录。
+# 所以做成一张表 + 一条结构性守卫（见 test_multiuser_state.py 的
+# HarnessStatePathIsolationTests）：**新增一个默认非空的路径类配置项时，
+# 守卫会先变红，逼作者先把它加到这里。**
+#
+# 键名用点号表示层级（`audit.path` = cfg["audit"]["path"]），值是临时目录下的落点。
+STATE_PATH_TARGETS = {
+    "user_state_path": "user_state.json",
+    "desktop_shortcuts_path": "desktop_shortcuts.json",
+    "audit.path": "audit.log.jsonl",
+    "music.state_path": "music_state.json",
+    "music.library_dir": "music",
+    "thumbs.cache_dir": "thumbs",
+    "office.cache_dir": "office",
+}
+
+STATE_PATH_KEYS = tuple(STATE_PATH_TARGETS)
+
+
+def _set_nested(cfg: dict, dotted: str, value) -> None:
+    """按 `a.b` 的形式写嵌套配置（一层就够本项目用了）。"""
+    if "." not in dotted:
+        cfg[dotted] = value
+        return
+    head, tail = dotted.split(".", 1)
+    node = cfg.get(head)
+    if not isinstance(node, dict):
+        node = {}
+        cfg[head] = node
+    node[tail] = value
 
 
 def redirect_state_paths(cfg: dict, work: str) -> None:
     """
-    把所有「默认落在项目根目录」的状态文件改到 work 目录下。
+    把所有「默认落在项目根目录」的目录与文件改到 work 目录下。
 
-    ★ 在**调用 prepare() 之前**调到才有效：prepare() 会把相对路径解析成
-    「配置文件所在目录」下的绝对路径，若此时还没有配置文件上下文，
-    它就按代码目录解析成项目根目录的绝对路径，之后子进程会照办。
+    ★ 必须在**调用 prepare() 之前**调到才有效：prepare() 会把相对路径解析成
+    「配置文件所在目录」下的绝对路径，而脚手架拼配置时还没有配置文件上下文，
+    于是它会按代码目录解析 —— 子进程照样照做，结果就是写脏真实部署。
     """
-    cfg["user_state_path"] = os.path.join(work, "user_state.json")
-    cfg["desktop_shortcuts_path"] = os.path.join(work, "desktop_shortcuts.json")
-
-    audit_cfg = cfg.get("audit")
-    if not isinstance(audit_cfg, dict):
-        audit_cfg = {}
-    else:
-        audit_cfg = dict(audit_cfg)
-    audit_cfg["path"] = os.path.join(work, "audit.log.jsonl")
-    cfg["audit"] = audit_cfg
+    for key, leaf in STATE_PATH_TARGETS.items():
+        _set_nested(cfg, key, os.path.join(work, leaf))
 
 
 def state_path_values(cfg: dict) -> dict:
     """把 STATE_PATH_KEYS 里每一项的实际取值取出来（守卫用）。"""
     values = {}
     for key in STATE_PATH_KEYS:
-        if key == "audit.path":
-            values[key] = (cfg.get("audit") or {}).get("path")
-        else:
-            values[key] = cfg.get(key)
+        node = cfg
+        for part in key.split("."):
+            node = node.get(part) if isinstance(node, dict) else None
+        values[key] = node
     return values
 
 
@@ -193,12 +248,11 @@ class ServerProcess:
         cfg["mount_network_drives"] = False
         cfg["mount_removable_drives"] = False
         cfg["protected_paths"] = []
-        cfg["thumbs"]["cache_dir"] = os.path.join(self.work, "thumbs")
-        cfg["office"]["cache_dir"] = os.path.join(self.work, "office")
-        # ★ 所有「默认落在项目根目录」的状态文件都改到临时目录里。
+        # ★ 所有「默认落在项目根目录」的目录与文件（缓存、界面状态、用户表旁的状态
+        #   文件、审计日志、音乐库与歌单）都在这里改到临时目录里。
         #   必须放在 prepare() **之前**（见 redirect_state_paths 的说明）。
-        #   抽成公用函数是因为这里已经出过三次事故，而且 test_fileweb.py
-        #   的那个端到端用例会自己拼配置，同样得调它。
+        #   抽成公用函数 + 一张表，是因为这里已经出过四次事故，
+        #   而且 test_fileweb.py 的端到端用例会自己拼配置，同样得调它。
         redirect_state_paths(cfg, self.work)
         cfg["auth"]["username"] = username
         cfg["auth"]["password_hash"] = security.hash_password(password)

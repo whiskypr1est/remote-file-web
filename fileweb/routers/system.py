@@ -146,6 +146,8 @@ async def system_info(request: Request) -> Dict[str, Any]:
             # ★ 用户管理（用户列表 / 在线情况 / 审计日志）：**仅管理员**。
             #   前端据此决定开始菜单里是否出现入口 —— 子用户看不到它。
             "users": is_admin_user,
+            # 音乐播放器：由 config.json 的 music.enabled 决定
+            "music": bool((cfg.get("music") or {}).get("enabled", True)),
             "text_encodings": ["utf-8", "gb18030", "big5", "latin-1"],
         },
         "versions": _read_vendor_versions(),

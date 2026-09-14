@@ -64,6 +64,7 @@ from fileweb.routers import content as content_router
 from fileweb.routers import desktop as desktop_router
 from fileweb.routers import fs as fs_router
 from fileweb.routers import jobs as jobs_router
+from fileweb.routers import music as music_router
 from fileweb.routers import sysmon as sysmon_router
 from fileweb.routers import system as system_router
 from fileweb.routers import terminal as terminal_router
@@ -454,6 +455,7 @@ def create_app(cfg=None) -> FastAPI:
     app.include_router(sysmon_router.router)
     app.include_router(jobs_router.router)
     app.include_router(users_router.router)
+    app.include_router(music_router.router)
 
     # ---- 静态资源 ----
     if os.path.isdir(STATIC_DIR):

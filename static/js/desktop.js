@@ -15,6 +15,7 @@ import { openPreview } from './preview.js';
 import { openTerminal } from './terminal.js';
 import { openTaskManager } from './taskmgr.js';
 import { openUserManager } from './usermgr.js';
+import { openMusic } from './music.js';
 import { initSessionState, restoreState } from './sessionstate.js';
 
 const WEEKDAYS = ['星期日', '星期一', '星期二', '星期三', '星期四', '星期五', '星期六'];
@@ -125,6 +126,16 @@ export class Desktop {
    */
   usersEnabled() {
     return ((this.info.features || {}).users === true);
+  }
+
+  /**
+   * 音乐播放器是否可用。
+   *
+   * 由服务端 features.music 决定（config.json 的 music.enabled）。
+   * 与其它功能一样只认明确的 true，避免「桌面显示入口、点开却打不开曲库」。
+   */
+  musicEnabled() {
+    return ((this.info.features || {}).music === true);
   }
 
   /* =========================================================================
@@ -269,6 +280,17 @@ export class Desktop {
         iconName: 'user',
         kind: 'builtin',
         onOpen: function () { openUserManager(self); }
+      });
+    }
+
+    // 音乐播放器：所有登录用户都能用（各人有各人的曲库与歌单）
+    if (this.musicEnabled()) {
+      items.push({
+        key: 'music',
+        label: '音乐播放器',
+        iconName: 'music',
+        kind: 'builtin',
+        onOpen: function () { openMusic(self); }
       });
     }
 
@@ -556,6 +578,14 @@ export class Desktop {
         '<span class="sm-hint">账号 / 在线 / 审计</span></div>';
     }
 
+    // 音乐播放器：入口由服务端 features.music 决定
+    if (this.musicEnabled()) {
+      html += '<div class="sm-item" data-action="music">' +
+        '<span class="sm-ico">' + icon('music') + '</span>' +
+        '<span class="sm-text">音乐播放器</span>' +
+        '<span class="sm-hint">歌单 / 歌词</span></div>';
+    }
+
     roots.forEach(function (root) {
       html += '<div class="sm-item" data-action="root" data-root="' + ui.escapeHtml(root.id) + '">' +
         '<span class="sm-ico">' + icon('drive') + '</span>' +
@@ -606,6 +636,8 @@ export class Desktop {
           openTaskManager(self);
         } else if (action === 'usermgr') {
           openUserManager(self);
+        } else if (action === 'music') {
+          openMusic(self);
         } else if (action === 'root') {
           openExplorer(self, el.dataset.root, '');
         } else if (action === 'password') {

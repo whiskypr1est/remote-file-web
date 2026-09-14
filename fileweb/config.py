@@ -175,6 +175,23 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "start_dir": "",
     },
 
+    # ★ 虚拟桌面内置的音乐播放器
+    # 曲库是**文件系统里的目录**（不是数据库）：导入 = 把文件复制进去，
+    # 所以歌曲在文件管理器里看得见、能备份、能直接用别的播放器打开。
+    "music": {
+        "enabled": True,
+        # 曲库根目录。相对路径以**本配置文件所在目录**为基准（与状态文件同一套规则）。
+        "library_dir": "music",
+        # true = 每个用户一个子目录（<library_dir>/<用户名>）；
+        # false = 全机共用一个曲库（所有人看到同一批歌）。
+        # 默认每人一份，与「每个子用户只看到自己的文件夹」保持一致。
+        "per_user": True,
+        # 单曲上限（导入与上传都按它算）。默认 200MB，无损音频也放得下。
+        "max_upload_mb": 200,
+        # 歌单与播放偏好的存储位置（同样相对本文件解析，按用户分文件）。
+        "state_path": "music_state.json",
+    },
+
     "thumbs": {
         "enabled": True,
         "cache_dir": "./thumb_cache",
@@ -568,6 +585,19 @@ def prepare(cfg: Dict[str, Any], cfg_path: str = "") -> Dict[str, Any]:
         cfg.get("user_state_path"), DEFAULT_CONFIG["user_state_path"])
     cfg["desktop_shortcuts_path"] = _resolve_under_config(
         cfg.get("desktop_shortcuts_path"), DEFAULT_CONFIG["desktop_shortcuts_path"])
+
+    # 音乐库目录与歌单文件也走同一套解析（相对本配置文件所在目录）。
+    # ★ 这两个默认值同样落在项目根目录下，所以 tests/_harness.py 的
+    #   STATE_PATH_KEYS 必须带上它们 —— 否则用临时配置起的服务会把测试
+    #   导入的歌写进真实部署的曲库（那条结构性守卫就是为了这个）。
+    music_cfg = cfg.setdefault("music", {})
+    if not isinstance(music_cfg, dict):
+        music_cfg = dict(DEFAULT_CONFIG["music"])
+        cfg["music"] = music_cfg
+    music_cfg["library_dir"] = _resolve_under_config(
+        music_cfg.get("library_dir"), DEFAULT_CONFIG["music"]["library_dir"])
+    music_cfg["state_path"] = _resolve_under_config(
+        music_cfg.get("state_path"), DEFAULT_CONFIG["music"]["state_path"])
 
     # ★ 通知这两个模块实际该读写哪个文件。走这种「单向下发」而不是让它们
     # 反过来 import config，是为了避开两个模块的循环导入。

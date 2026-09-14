@@ -27,6 +27,14 @@ desktop_shortcuts.*.json
 audit.log.jsonl
 audit.log.jsonl.*
 
+# ---- 音乐播放器（虚拟桌面内置）------------------------------------------
+# 曲库是**文件系统里的目录**（导入=把文件复制进去），显然不该进仓库。
+# 用 /music/ 锚定到项目根目录，免得将来有个叫 music 的源码目录被一起忽略。
+/music/
+# 歌单与播放偏好（按用户分文件）
+music_state.json
+music_state.*.json
+
 # ---- 运行时缓存与临时产物 -------------------------------------------------
 thumb_cache/
 office_cache/

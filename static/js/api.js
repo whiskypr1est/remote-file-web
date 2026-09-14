@@ -562,6 +562,80 @@ export function kickUser(username) {
 }
 
 /* ---------------------------------------------------------------------------
+   音乐播放器
+   --------------------------------------------------------------------------- */
+
+/** 曲库：库信息 + 全部歌曲 + 歌单 + 播放偏好（一次取全，前端自己排/搜） */
+export function musicLibrary() {
+  return request('GET', '/api/music/library');
+}
+
+/**
+ * 从「我能看到的文件」里导入歌曲。
+ * @param {string} root  根标识
+ * @param {string[]} paths 该根下的相对路径列表
+ */
+export function musicImport(root, paths) {
+  return request('POST', '/api/music/import', {
+    json: { root: root, paths: paths || [] }
+  });
+}
+
+/** 直接把本机文件上传进曲库（原始体上传，带进度） */
+export function musicUpload(file, onProgress) {
+  return uploadBlob('/api/music/upload', file, file.name, onProgress);
+}
+
+/** 从曲库删除一首歌（连同它的歌词；导入的源文件不受影响） */
+export function musicDelete(id) {
+  return request('POST', '/api/music/delete', { json: { id: id } });
+}
+
+/** 读歌词（服务端会自动找同名 .lrc） */
+export function musicLyrics(id) {
+  return request('GET', '/api/music/lyrics', { params: { id: id } });
+}
+
+/** 保存歌词（上传 .lrc 的文本，或直接粘贴） */
+export function musicSaveLyrics(id, text) {
+  return request('POST', '/api/music/lyrics', { json: { id: id, text: text } });
+}
+
+export function musicCreatePlaylist(name) {
+  return request('POST', '/api/music/playlists', { json: { name: name } });
+}
+
+export function musicRenamePlaylist(id, name) {
+  return request('POST', '/api/music/playlists/rename', { json: { id: id, name: name } });
+}
+
+export function musicDeletePlaylist(id) {
+  return request('POST', '/api/music/playlists/delete', { json: { id: id } });
+}
+
+/**
+ * 歌单增删歌曲。
+ * @param {string} id     歌单 id
+ * @param {string} song   歌曲标识（曲库里的文件名）
+ * @param {string} action 'add' | 'remove'
+ */
+export function musicPlaylistSong(id, song, action) {
+  return request('POST', '/api/music/playlists/songs', {
+    json: { id: id, song: song, action: action || 'add' }
+  });
+}
+
+/** 保存播放偏好（音量 / 模式 / 上次播到哪） */
+export function musicSavePrefs(patch) {
+  return request('POST', '/api/music/prefs', { json: patch || {} });
+}
+
+/** 音频流地址（交给 <audio src>，无法带自定义头） */
+export function musicStreamUrl(id) {
+  return buildUrl('/api/music/stream', { id: id });
+}
+
+/* ---------------------------------------------------------------------------
    URL 构造（用于 <img>、<video>、<a download> 等无法带自定义头的场景）
    --------------------------------------------------------------------------- */
 
@@ -616,6 +690,73 @@ export function triggerDownload(url) {
 /* ---------------------------------------------------------------------------
    上传（原始请求体 + 进度回调）
    --------------------------------------------------------------------------- */
+
+/**
+ * 把一段二进制原样 POST 到某个接口，带上传进度。
+ *
+ * 上传类接口收的是**流**而不是 JSON（服务端可以边收边写盘，大文件不会先
+ * 在内存或临时目录里落一份），所以不能走 request()。用 XHR 而不是 fetch
+ * 是为了拿到上传进度（fetch 至今没有可用的上传进度事件）。
+ *
+ * @param {string}   path       接口路径
+ * @param {Blob}     blob       要发送的内容（通常是 File）
+ * @param {string}   filename   ?filename= 查询参数
+ * @param {function} onProgress (loaded, total) => void
+ * @returns {Promise<object>}
+ */
+export function uploadBlob(path, blob, filename, onProgress) {
+  return new Promise(function (resolve, reject) {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', buildUrl(path, { filename: filename }), true);
+    xhr.withCredentials = true;
+    xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+    if (csrfToken) {
+      xhr.setRequestHeader('X-CSRF-Token', csrfToken);
+    }
+
+    if (xhr.upload && onProgress) {
+      xhr.upload.onprogress = function (e) {
+        if (e.lengthComputable) {
+          onProgress(e.loaded, e.total);
+        }
+      };
+    }
+
+    xhr.onload = function () {
+      let data = null;
+      try {
+        data = JSON.parse(xhr.responseText);
+      } catch (err) {
+        data = null;
+      }
+
+      if (xhr.status === 401) {
+        redirectToLogin();
+        reject(new ApiError('未登录或会话已过期', 401, 'unauthorized'));
+        return;
+      }
+
+      if (xhr.status >= 200 && xhr.status < 300 && data && data.ok) {
+        resolve(data);
+        return;
+      }
+
+      let message = (data && (data.message || data.detail)) || '';
+      if (!message) {
+        message = '上传失败（HTTP ' + xhr.status + '）';
+      }
+      reject(new ApiError(message, xhr.status, (data && data.code) || ''));
+    };
+
+    xhr.onerror = function () {
+      // 服务端按 Content-Length 提前拒绝时（例如超过单曲上限），
+      // 连接可能被直接重置 —— 与其报「网络错误」，不如把可能的原因说清楚
+      reject(new ApiError('上传失败：连接被中断（常见原因是文件超过大小上限）', 0));
+    };
+
+    xhr.send(blob);
+  });
+}
 
 /**
  * 上传单个文件。

@@ -263,35 +263,48 @@ class HarnessStatePathIsolationTests(unittest.TestCase):
 
     def test_every_state_path_in_default_config_is_covered(self):
         """
-        ★★ 结构性守卫：DEFAULT_CONFIG 里凡是「默认指向项目根目录下的
-        JSON/JSONL 文件」的配置项，都必须登记在 _harness.STATE_PATH_KEYS 里。
+        ★★ 结构性守卫：DEFAULT_CONFIG 里凡是「默认指向某个真实路径」的配置项，
+        都必须登记在 _harness.STATE_PATH_TARGETS 里。
 
-        这条是让上面那个坑**不会再犯第四次**的关键：新增一个同类配置项时
-        （比如将来的会话表、下载记录），这里会直接变红，逼作者同时把它
+        这条是让上面那个坑**不会再犯第五次**的关键：新增一个同类配置项时
+        （会话表、下载记录、曲库、缓存……），这里会直接变红，逼作者同时把它
         加进 redirect_state_paths —— 否则「用临时配置起的服务会去写真实部署」
         这个错误在很长一段时间里都不会有任何症状，直到用户的数据没了。
+
+        判定规则（按**键名**，不看值）：
+          * `*_path` / `*_dir` / 名为 `path` 的子键算路径类配置；
+          * ★ 但**默认值为空**的不算 —— 空表示「没配置 / 自动」，不会往那里写
+            （例如 `archive.rar_path`、`office.soffice_path`、`terminal.start_dir`
+            都是外部程序或「用第一个根」，我们从不写进去）。
         """
-        suspects = set()
+        path_keys = {}
         for key, value in config_module.DEFAULT_CONFIG.items():
-            if isinstance(value, str) and value.endswith((".json", ".jsonl")):
-                suspects.add(key)
+            if isinstance(value, str) and (key.endswith("_path") or key.endswith("_dir")):
+                path_keys[key] = value
             elif isinstance(value, dict):
                 for sub_key, sub_value in value.items():
-                    if isinstance(sub_value, str) and sub_value.endswith((".json", ".jsonl")):
-                        suspects.add(key + "." + sub_key)
+                    if (isinstance(sub_value, str)
+                            and (sub_key in ("path", "dir")
+                                 or sub_key.endswith("_path")
+                                 or sub_key.endswith("_dir"))):
+                        path_keys["%s.%s" % (key, sub_key)] = sub_value
 
+        must_redirect = {key for key, value in path_keys.items() if str(value).strip()}
         covered = set(STATE_PATH_KEYS)
-        uncovered = sorted(suspects - covered)
+
+        uncovered = sorted(must_redirect - covered)
         self.assertEqual(
             uncovered, [],
-            "★ 这些配置项的默认值是项目根目录下的状态文件，但没被 "
-            "tests/_harness.redirect_state_paths 覆盖：%s —— "
-            "请把它们加进 STATE_PATH_KEYS 并在 redirect_state_paths 里重定向"
-            % uncovered)
+            "★ 这些配置项的默认值指向真实路径，但没被 tests/_harness.redirect_state_paths "
+            "覆盖：%s —— 请把它们加进 STATE_PATH_TARGETS，"
+            "否则用临时配置起的服务会写脏真实部署" % uncovered)
 
-        # 反向检查：登记了却已经不存在，说明守卫本身过期了
-        stale = sorted(covered - suspects)
-        self.assertEqual(stale, [], "STATE_PATH_KEYS 里这些项在 DEFAULT_CONFIG 中已不存在：%s" % stale)
+        # 反向检查：登记了却已经不存在（或默认值变成空），说明守卫本身过期了
+        stale = sorted(covered - must_redirect)
+        self.assertEqual(
+            stale, [],
+            "STATE_PATH_TARGETS 里这些项在 DEFAULT_CONFIG 中已不存在、"
+            "或默认值已变成空：%s" % stale)
 
 
 class PerUserDesktopApiTests(unittest.TestCase):

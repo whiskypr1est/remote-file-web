@@ -90,6 +90,13 @@
     "evict_grace_seconds": 20,
     "start_dir": ""
   },
+  "music": {
+    "enabled": true,
+    "library_dir": "music",
+    "per_user": true,
+    "max_upload_mb": 200,
+    "state_path": "music_state.json"
+  },
   "thumbs": {
     "enabled": true,
     "cache_dir": "./thumb_cache",
@@ -146,6 +153,7 @@
     "terminal.max_sessions 是**每人**能同时开几个命令行窗口（用户表里每人的额度取小生效，默认 5）；terminal.max_sessions_total 是全机总量兜底（默认 64，0 表示不设限）。terminal.idle_timeout_seconds 默认为 0：学生关掉浏览器后 cmd 会一直留着（方便回来接着看输出），总量靠上面两个上限管住，不再靠「半小时后自动回收」兜底。",
     "terminal.evict_grace_seconds：会话上限满了之后，一个「没有客户端连着且已闲置这么久」的旧会话可以被新会话顶掉，而不是直接报「会话数已达上限」。因为关掉浏览器不再结束会话，分离的会话仍占名额，这个值就是留给它的出路。",
     "sysmon 是虚拟桌面里的「任务管理器」窗口：只读监控，**不提供**「结束进程」。它会让任何能登录的人看到服务器上正在跑哪些程序、以及各自属于哪个用户，不需要这个信息面就把 enabled 改成 false。GPU 利用率目前只支持 NVIDIA 显卡（读 nvidia-smi 命令行），其它显卡会如实显示「不可用」，而不是编一个 0% 出来。",
+    "music 是虚拟桌面内置的音乐播放器：曲库就是**文件系统里的一个目录**（不是数据库），导入 = 把文件复制进去，所以歌曲在文件管理器里看得见、能备份、能直接用别的播放器打开。library_dir 默认 music（相对本文件解析）；per_user=true 时每人一个子目录（music/<用户名>），与「每个子用户只看到自己的文件夹」一致，改成 false 则全机共用一个曲库（歌单与播放偏好仍然各人各一份）。max_upload_mb 是单曲上限，导入与上传都按它算。state_path 存歌单与播放偏好（含音量与播放模式），按用户分文件。只接受浏览器能真正播放的格式（mp3/flac/m4a/aac/ogg/opus/wav/webm），其它格式导入时会被明确拒绝并说明原因 —— 收下放不出来的文件只会让人以为播放器坏了。歌词放成歌曲旁边的同名 .lrc：导入时会自动识别带走，也可以在播放器里上传或直接粘贴，用记事本就能改。",
     "新建文件（资源管理器右键「新建文件」，或工具栏按钮）与上传共用 upload.blocked_extensions 黑名单，所以默认不能新建 .bat / .ps1 这类可执行文件；确实需要就把对应扩展名从那个列表里删掉。"
   ]
 }
