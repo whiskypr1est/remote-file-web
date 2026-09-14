@@ -97,6 +97,11 @@
     "max_upload_mb": 200,
     "state_path": "music_state.json"
   },
+  "lyrics": {
+    "enabled": true,
+    "stale_seconds": 10,
+    "token": ""
+  },
   "thumbs": {
     "enabled": true,
     "cache_dir": "./thumb_cache",

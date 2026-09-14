@@ -1,0 +1,181 @@
+/* ==========================================================================
+   桌面歌词 · 悬浮窗样式
+   --------------------------------------------------------------------------
+   目标：像网易云音乐的桌面歌词那样 —— **一行大字、白色、带黑描边**，
+   在任何背景（游戏画面、白底文档、视频）上都看得清。
+
+   描边为什么用 8 个方向的 text-shadow，而不是 -webkit-text-stroke：
+   text-stroke 是**压**在字形上的，笔画细的汉字（比如「一」「十」）会被吃掉
+   一圈，看起来发虚；8 方向阴影是实心填充在外围，字形完整、边缘更硬。
+   偏移量用 em 而不是 px，这样换字号时描边粗细自动跟着变（40px 时约 1.6px）。
+
+   整个页面必须是透明的：窗口本身是 transparent + frame:false 的，
+   这里只要有一点背景色，屏幕上就会出现一个方块。
+   ========================================================================== */
+
+:root {
+  --lyric-size: 40px;
+  /* 描边偏移：0.05em ≈ 40px 字号下的 2px，八方向叠加成一圈实心边 */
+  --outline: 0.05em;
+  --font-stack: "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC",
+                "Hiragino Sans GB", "Source Han Sans SC", sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  background: transparent;
+  overflow: hidden;
+  /* 这是一层浮在桌面上的字，任何选择/拖拽高亮都会显得很脏 */
+  user-select: none;
+  cursor: default;
+}
+
+/*
+  ★ 拖动：只在「调整模式」（鼠标穿透关闭）且未锁定时生效。
+  平时穿透开着，窗口根本收不到鼠标事件，所以这段不会影响正常使用；
+  进入调整模式后整块区域就是拖拽把手，拖完位置由主进程自动保存。
+*/
+body.draggable {
+  -webkit-app-region: drag;
+}
+
+.stage {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.18em;
+  padding: 0 28px;
+  opacity: 1;
+  transition: opacity 0.25s ease;
+}
+
+/* 暂停时半透明（需求：暂停时半透明并停止滚动） */
+.stage.paused {
+  opacity: 0.55;
+}
+
+/* 完全空闲（没有歌）时更淡，免得一行「等待播放」长时间占着屏幕 */
+.stage.idle {
+  opacity: 0.42;
+}
+
+.lyric-slot {
+  max-width: 100%;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  min-height: 1.3em;
+}
+
+.lyric {
+  font-family: var(--font-stack);
+  font-size: var(--lyric-size);
+  font-weight: 700;
+  line-height: 1.28;
+  color: #ffffff;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  /* 八方向实心描边 + 一层柔和投影（有背景画面时更有层次）。
+     ★ 描边用**不透明**的纯黑：早先用 rgba(0,0,0,.92) 时，浅色背景下
+       背景会从描边里透出来，白字看起来发灰发脏（实际截图对比过）。 */
+  text-shadow:
+    calc(-1 * var(--outline)) calc(-1 * var(--outline)) 0 #000,
+    0 calc(-1 * var(--outline)) 0 #000,
+    var(--outline) calc(-1 * var(--outline)) 0 #000,
+    calc(-1 * var(--outline)) 0 0 #000,
+    var(--outline) 0 0 #000,
+    calc(-1 * var(--outline)) var(--outline) 0 #000,
+    0 var(--outline) 0 #000,
+    var(--outline) var(--outline) 0 #000,
+    0 0.07em 0.2em rgba(0, 0, 0, 0.72);
+  /* 换行时的那一下淡入：直接切换会显得很生硬 */
+  animation: none;
+}
+
+.lyric.in {
+  animation: line-in 0.26s ease-out;
+}
+
+/*
+  ★ 起始透明度是 0.3 而不是 0：这个动画只是「换行时柔和一点」，但万一它没能正常
+    跑完（合成器被冻住、动画被中断），停在第一帧就是**整行字看不见** ——
+    而「把歌词显示出来」是这个程序唯一必须做到的事，不能赌动画一定跑得完。
+    0.3 起步即使卡住也还看得清，观感上也比从全透明跳出来更自然。
+  （这个坑是拿无头浏览器截图核对外观时发现的：截图永远停在第一帧，
+    于是看到一张什么都没有的图。）
+*/
+@keyframes line-in {
+  from {
+    opacity: 0.3;
+    transform: translateY(0.1em) scale(0.99);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+/*
+  副标题（歌名 / 状态提示 / 调整模式的说明）。
+  ★ 正常播放时它是**空的**：需求要的是「单行大字」，多一行小字就不像了；
+  只有调整模式或出错时才显示。
+*/
+.sub {
+  font-family: var(--font-stack);
+  font-size: calc(var(--lyric-size) * 0.32);
+  font-weight: 500;
+  line-height: 1.4;
+  color: rgba(255, 255, 255, 0.92);
+  text-shadow:
+    -0.06em -0.06em 0 #000,
+    0.06em -0.06em 0 #000,
+    -0.06em 0.06em 0 #000,
+    0.06em 0.06em 0 #000,
+    0 0.1em 0.18em rgba(0, 0, 0, 0.6);
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sub:empty {
+  display: none;
+}
+
+.progress {
+  position: absolute;
+  left: 28px;
+  right: 28px;
+  bottom: 6px;
+  height: 3px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.18);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.55);
+  overflow: hidden;
+}
+
+.progress[hidden] {
+  display: none;
+}
+
+.progress-fill {
+  height: 100%;
+  width: 0;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.85);
+}

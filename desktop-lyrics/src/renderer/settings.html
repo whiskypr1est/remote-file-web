@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'none'; script-src 'self'; style-src 'self';" />
+  <title>桌面歌词 · 连接设置</title>
+  <link rel="stylesheet" href="settings.css" />
+</head>
+<body>
+  <header class="head">
+    <h1>桌面歌词</h1>
+    <p class="sub">配合虚拟桌面里的「音乐播放器」使用：浏览器上报，这里显示。</p>
+  </header>
+
+  <main>
+    <section class="card">
+      <h2>服务端</h2>
+
+      <label class="field">
+        <span class="label">服务器地址</span>
+        <input id="serverUrl" type="text" placeholder="http://192.168.1.10:8000"
+               autocomplete="off" spellcheck="false" />
+        <span class="tip">就是平时打开虚拟桌面的那个地址，端口通常是 8000。
+          不写 http:// 也可以。</span>
+      </label>
+
+      <label class="field">
+        <span class="label">订阅用户</span>
+        <input id="user" type="text" list="userList" placeholder="留空 = 订阅所有人"
+               autocomplete="off" spellcheck="false" />
+        <datalist id="userList"></datalist>
+        <span class="tip">填用户名（例如 wangqi）就只看这个人的歌；留空则谁在放就显示谁。
+          一台机器上多人同时用的时候建议填自己的，否则歌词会被别人顶掉。</span>
+      </label>
+
+      <label class="field">
+        <span class="label">Token（一般留空）</span>
+        <input id="token" type="text" placeholder="服务端没配 lyrics.token 就不用填"
+               autocomplete="off" spellcheck="false" />
+        <span class="tip">只在服务端 <code>config.json</code> 里给
+          <code>lyrics.token</code> 配了值时才需要填。</span>
+      </label>
+
+      <div class="row">
+        <button id="test" class="btn" type="button">测试连接</button>
+        <span id="testResult" class="result"></span>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>显示</h2>
+
+      <label class="field inline">
+        <span class="label">字号</span>
+        <select id="fontSize">
+          <option value="28">小（28px）</option>
+          <option value="40">中（40px，默认）</option>
+          <option value="52">大（52px）</option>
+          <option value="68">特大（68px）</option>
+        </select>
+      </label>
+
+      <label class="check">
+        <input id="showProgress" type="checkbox" />
+        <span>显示底部进度条</span>
+      </label>
+
+      <label class="check">
+        <input id="clickThrough" type="checkbox" />
+        <span>鼠标穿透（推荐开启）</span>
+      </label>
+      <p class="tip ind">开启后鼠标点到的还是下面的窗口 —— 歌词只是一层字，
+        不会挡住操作。要拖动歌词位置时先把它关掉（那时窗口会一直显示），
+        拖好再打开。</p>
+
+      <label class="check">
+        <input id="locked" type="checkbox" />
+        <span>锁定位置</span>
+      </label>
+      <p class="tip ind">锁定后拖不动，防止玩游戏时误拖。</p>
+    </section>
+
+    <section class="card">
+      <h2>启动</h2>
+      <label class="check">
+        <input id="autoStart" type="checkbox" />
+        <span>开机自动启动</span>
+      </label>
+      <p class="tip ind">开机后它只在托盘里待着；有歌在放的时候才会浮出歌词。</p>
+    </section>
+
+    <section class="card notice">
+      <h2>两点要知道的事</h2>
+      <p>· <strong>独占全屏的游戏盖不住这层字。</strong>
+        这是 Windows 合成器的限制（Discord、Steam 的浮层同样盖不住）。
+        把游戏改成「无边框窗口化」就可以正常显示。</p>
+      <p>· 歌词由音乐播放器上报给服务端再广播过来，
+        <strong>关掉浏览器之后仍然有效</strong>；关掉播放器窗口或停止播放，
+        歌词会自动消失。</p>
+    </section>
+  </main>
+
+  <footer class="foot">
+    <span id="status" class="status">—</span>
+    <span class="spacer"></span>
+    <button id="readme" class="btn ghost" type="button">说明文档</button>
+    <button id="close" class="btn ghost" type="button">关闭</button>
+    <button id="save" class="btn primary" type="button">保存</button>
+  </footer>
+
+  <script src="settings.js"></script>
+</body>
+</html>

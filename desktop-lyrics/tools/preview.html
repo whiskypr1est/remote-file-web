@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <title>桌面歌词 · 外观预览</title>
+  <!--
+    ★ 这个页面用的就是悬浮窗**真正的那套** CSS 与 JS（../src/renderer/），
+      只是把主进程的接口换成了页内的假实现，并自己塞一份示例状态进去。
+
+      用途：不启动 Electron 也能核对「字号 / 描边 / 换行动画 / 暂停半透明」
+      这些外观细节（用浏览器打开，或者用无头浏览器截图来比对）。
+      它**不会**被打包（package.json 的 files 只收 src/）。
+
+      用法：?scene=playing | paused | intro | empty | offline
+    -->
+  <link rel="stylesheet" href="../src/renderer/overlay.css" />
+  <style>
+    /*
+      悬浮窗本身是完全透明的（浮在桌面上）。为了在这里看清描边的效果，
+      预览页铺一个偏亮的、带色块的背景 —— 白字黑边的效果在深色纯色背景上
+      是「看起来还行」，在浅色/花色背景上才见真章。
+    */
+    html, body {
+      background:
+        radial-gradient(circle at 18% 30%, rgba(255, 214, 140, 0.95) 0%, rgba(255, 214, 140, 0) 45%),
+        radial-gradient(circle at 72% 78%, rgba(120, 200, 255, 0.8) 0%, rgba(120, 200, 255, 0) 40%),
+        linear-gradient(120deg, #7fb0d8 0%, #cfe3ea 38%, #f2e2c8 70%, #a8c8a0 100%);
+    }
+  </style>
+</head>
+<body>
+  <!-- 与 src/renderer/index.html 保持一致的结构 -->
+  <div class="stage" id="stage">
+    <div class="lyric-slot">
+      <div class="lyric" id="lyric"></div>
+    </div>
+    <div class="sub" id="sub"></div>
+    <div class="progress" id="progress" hidden>
+      <div class="progress-fill" id="progressFill"></div>
+    </div>
+  </div>
+
+  <script>
+    /* 假的 preload：把回调收下来，稍后由下面的场景脚本触发。 */
+    window.__hooks = { state: [], status: [], config: [] };
+    window.lyrics = {
+      ready: function () {},
+      onState: function (cb) { window.__hooks.state.push(cb); },
+      onStatus: function (cb) { window.__hooks.status.push(cb); },
+      onConfig: function (cb) { window.__hooks.config.push(cb); }
+    };
+  </script>
+  <script src="../src/renderer/overlay.js"></script>
+  <script>
+    (function () {
+      // 场景：优先用页外指定的 window.__SCENE__（便于无头截图逐张核对），
+      // 其次是 ?scene=…，都没有就显示「正在播放」这一最常见的样子。
+      var scene = window.__SCENE__
+        || new URLSearchParams(location.search).get('scene')
+        || 'playing';
+      var LYRICS = [
+        { time: 0, text: '一群嗜血的蚂蚁 被腐肉所吸引' },
+        { time: 12.4, text: '我面无表情 看孤独的风景' },
+        { time: 26.8, text: '失去你 爱恨开始分明' },
+        { time: 41.2, text: '为你弹奏萧邦的夜曲' },
+        { time: 55.6, text: '纪念我死去的爱情' }
+      ];
+
+      var envelope = null;
+      var status = { state: 'online', message: '' };
+      var config = {
+        fontSize: 40, showProgress: false,
+        clickThrough: true, locked: false, editing: false
+      };
+
+      if (scene === 'playing') {
+        // 正唱到「为你弹奏萧邦的夜曲」（41.2 秒那行）
+        envelope = { state: {
+          idle: false, playing: true, source: 'wangqi', title: '夜曲',
+          artist: '周杰伦', duration: 227, currentTime: 44.5, lyrics: LYRICS
+        }, receivedAt: Date.now() };
+      } else if (scene === 'paused') {
+        envelope = { state: {
+          idle: false, playing: false, source: 'wangqi', title: '夜曲',
+          artist: '周杰伦', duration: 227, currentTime: 44.5, lyrics: LYRICS
+        }, receivedAt: Date.now() };
+      } else if (scene === 'intro') {
+        // 前奏：还没到第一句，此时显示歌名
+        envelope = { state: {
+          idle: false, playing: true, source: 'wangqi', title: '夜曲',
+          artist: '周杰伦', duration: 227, currentTime: 0, lyrics: [
+            { time: 9.5, text: '一群嗜血的蚂蚁 被腐肉所吸引' }
+          ]
+        }, receivedAt: Date.now() };
+      } else if (scene === 'progress') {
+        envelope = { state: {
+          idle: false, playing: true, source: 'wangqi', title: '夜曲',
+          artist: '周杰伦', duration: 227, currentTime: 120, lyrics: LYRICS
+        }, receivedAt: Date.now() };
+        config.showProgress = true;
+      } else if (scene === 'offline') {
+        envelope = { state: { idle: true }, receivedAt: Date.now() };
+        status = { state: 'offline', message: '连不上服务端：网络不可达' };
+        config.clickThrough = false;
+        config.editing = true;
+      } else {
+        envelope = { state: { idle: true }, receivedAt: Date.now() };
+      }
+
+      // 长歌词会不会被截断（超长一行要能优雅省略，而不是顶破窗口）
+      if (scene === 'long') {
+        envelope = { state: {
+          idle: false, playing: true, source: 'wangqi',
+          title: '一首名字特别长的歌', artist: '某位名字也很长的歌手',
+          duration: 300, currentTime: 30, lyrics: [
+            { time: 0, text: '这一行歌词故意写得非常非常长用来检查超长的时候会不会把窗口顶破或者糊成一团' }
+          ]
+        }, receivedAt: Date.now() };
+      }
+
+      window.__hooks.config.forEach(function (cb) { cb(config); });
+      window.__hooks.status.forEach(function (cb) { cb(status); });
+      window.__hooks.state.forEach(function (cb) { cb(envelope); });
+    })();
+  </script>
+</body>
+</html>

@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <!--
+    悬浮窗自己的 CSP：它只加载本地的 css/js，不需要任何网络与内联脚本。
+    歌词是**外部数据**，渲染时必须用 textContent 写入（见 overlay.js），
+    这里的 CSP 是第二道防线：万一哪天有人图省事改成 innerHTML，
+    注入的 <script>/<img onerror> 也不会执行、不会外连。
+  -->
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'none';" />
+  <title>桌面歌词</title>
+  <link rel="stylesheet" href="overlay.css" />
+</head>
+<body>
+  <div class="stage" id="stage">
+    <div class="lyric-slot">
+      <div class="lyric" id="lyric"></div>
+    </div>
+    <div class="sub" id="sub"></div>
+    <div class="progress" id="progress" hidden>
+      <div class="progress-fill" id="progressFill"></div>
+    </div>
+  </div>
+  <script src="overlay.js"></script>
+</body>
+</html>

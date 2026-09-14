@@ -64,6 +64,7 @@ from fileweb.routers import content as content_router
 from fileweb.routers import desktop as desktop_router
 from fileweb.routers import fs as fs_router
 from fileweb.routers import jobs as jobs_router
+from fileweb.routers import lyrics as lyrics_router
 from fileweb.routers import music as music_router
 from fileweb.routers import sysmon as sysmon_router
 from fileweb.routers import system as system_router
@@ -265,7 +266,13 @@ class SecurityMiddleware:
         """
         path = scope.get("path", "") or ""
 
-        # 非 /api 下的 WS 不涉及认证（本项目当前没有这类通道）
+        # 非 /api 下的 WS 不涉及认证。
+        #
+        # ★ 目前只有一条这样的通道：/ws/lyrics（桌面歌词悬浮窗）。它**故意**
+        #   不要认证 —— 悬浮窗是独立进程，没有会话 Cookie，而且要在没人打开
+        #   浏览器的时候也能连上。代价（局域网内任何人都能推文字/看到别人在
+        #   放什么歌）是用户明确接受的，扩展点见 config 的 lyrics.token。
+        #   除它之外的任何实时通道都必须放在 /api 下，别照抄这条。
         if not path.startswith("/api") or path in PUBLIC_API_PATHS:
             return True
 
@@ -456,6 +463,10 @@ def create_app(cfg=None) -> FastAPI:
     app.include_router(jobs_router.router)
     app.include_router(users_router.router)
     app.include_router(music_router.router)
+    # ★ 桌面歌词：路由在 /api 之外（/now-playing、/ws/lyrics）。
+    #   悬浮窗是独立进程、没有会话 Cookie，必须在无人登录浏览器时也能连上，
+    #   所以它不走登录校验 —— 取舍与安全说明见 fileweb/routers/lyrics.py 头部。
+    app.include_router(lyrics_router.router)
 
     # ---- 静态资源 ----
     if os.path.isdir(STATIC_DIR):

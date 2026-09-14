@@ -148,6 +148,10 @@ async def system_info(request: Request) -> Dict[str, Any]:
             "users": is_admin_user,
             # 音乐播放器：由 config.json 的 music.enabled 决定
             "music": bool((cfg.get("music") or {}).get("enabled", True)),
+            # ★ 桌面歌词：开启时网页播放器才会把「现在在放什么」上报给服务端，
+            #   转给桌面悬浮窗（desktop-lyrics/）。关掉它 = 不产生任何上报，
+            #   悬浮窗那边也会收到 idle。悬浮窗自身在服务端关闭时显示明确提示。
+            "lyrics": bool((cfg.get("lyrics") or {}).get("enabled", True)),
             "text_encodings": ["utf-8", "gb18030", "big5", "latin-1"],
         },
         "versions": _read_vendor_versions(),

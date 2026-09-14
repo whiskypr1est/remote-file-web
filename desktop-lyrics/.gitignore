@@ -1,0 +1,8 @@
+# 依赖与打包产物都不进仓库：
+#   node_modules 里是 electron 本体（几百 MB），dist 是每次打包都能重新生成的
+node_modules/
+dist/
+npm-debug.log*
+
+# 冒烟测试（tools/smoke.js）每次运行都会重新生成的截图
+dist-smoke/

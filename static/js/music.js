@@ -38,6 +38,15 @@
 import * as api from './api.js';
 import * as ui from './ui.js';
 import { icon } from './icons.js';
+// ★ 桌面歌词上报：把「现在在放什么」发给服务端，转给桌面悬浮窗
+//   （desktop-lyrics/）。关掉浏览器之后歌词还在，靠的就是它。
+//   所有调用都是「发出去就不管」，失败绝不影响播放（见该文件头部说明）。
+import {
+  configureNowPlaying,
+  reportProgress,
+  reportSong,
+  reportStop
+} from './nowplaying.js';
 import { wm } from './wins.js';
 
 /** 能播的扩展名（与服务端 music.PLAYABLE_EXTENSIONS 保持一致） */
@@ -207,6 +216,19 @@ class MusicPlayer {
     // 首帧就把音量摆到位，避免「先以 100% 响一下再跳到设定值」
     this.applyVolume();
     this.applyMode();
+
+    // ★ 桌面歌词上报的开关与身份。
+    //   enabled 只认服务端明确的 true（features.lyrics，由 config.json 的
+    //   lyrics.enabled 决定）：关掉后浏览器侧一条上报都不会产生，而不是
+    //   「发了再被拒」—— 实验室里十台机器每秒各发两条是很实在的流量。
+    //   source 用**当前用户名**：服务端按它分别记状态，悬浮窗可以只订阅
+    //   某个人的歌（多用户各播各的，否则会互相顶掉）。
+    const features = (this.desktop && this.desktop.info && this.desktop.info.features) || {};
+    const account = (this.desktop && this.desktop.info && this.desktop.info.user) || {};
+    configureNowPlaying({
+      enabled: features.lyrics === true,
+      source: account.username || ''
+    });
   }
 
   /* -- 模板 --------------------------------------------------------------- */
@@ -385,14 +407,29 @@ class MusicPlayer {
         self.renderList();
       }
       self.renderProgress();
+      // 时长是浏览器探测出来的，切歌那一刻还不知道，所以元数据到位后补报一次：
+      // 悬浮窗的进度条要用它标总长（歌词本身只依赖当前时间）。
+      self.publishNowPlaying();
     });
     this.$.audio.addEventListener('timeupdate', function () {
       self.renderProgress();
       self.highlightLyric();
+      // 播放中的常规上报（模块内部按 500ms 节流，这里按事件原样喂进去即可）
+      reportProgress(self.$.audio.currentTime, !self.$.audio.paused);
     });
     this.$.audio.addEventListener('ended', function () { self.onEnded(); });
-    this.$.audio.addEventListener('play', function () { self.renderTransport(); });
-    this.$.audio.addEventListener('pause', function () { self.renderTransport(); });
+    this.$.audio.addEventListener('play', function () {
+      self.renderTransport();
+      reportProgress(self.$.audio.currentTime, true, true);
+    });
+    this.$.audio.addEventListener('pause', function () {
+      self.renderTransport();
+      reportProgress(self.$.audio.currentTime, false, true);
+    });
+    this.$.audio.addEventListener('seeked', function () {
+      // 拖动进度条后必须立刻上报：否则悬浮窗会停在旧位置，直到下一次 500ms 节拍
+      reportProgress(self.$.audio.currentTime, !self.$.audio.paused, true);
+    });
     this.$.audio.addEventListener('error', function () {
       if (!self.currentId) {
         return;
@@ -739,6 +776,36 @@ class MusicPlayer {
 
   /* -- 播放 --------------------------------------------------------------- */
 
+  /**
+   * 把「现在在放什么」上报给服务端（桌面歌词）。
+   *
+   * ★ 歌词是**异步**加载的，所以切歌时这个方法会被调用两三次，每次报的都是
+   *   **整首歌**（服务端直接覆盖，不需要增量协议）：
+   *     1. prepareSong 里先报歌名 —— 悬浮窗立刻换标题，不用等歌词；
+   *     2. loadedmetadata 里补报（此时才知道真实时长）；
+   *     3. 歌词到位、或用户改完歌词后，再报一次带时间轴的版本。
+   *   中间任何一次失败都不影响后来的：上报通道是幂等的「最新状态覆盖」。
+   */
+  publishNowPlaying() {
+    const song = this.songById(this.currentId);
+    if (!song) {
+      return;
+    }
+    // 只有**带时间轴**的歌词才上报：单行滚动悬浮窗对纯文本歌词无能为力，
+    // 送过去只会得到一堆没有时间的行（服务端也会把它们丢掉）。
+    // 这种情况悬浮窗退化成显示「歌名 - 歌手」，比显示一行不会动的字要好。
+    const usable = this.lyrics && this.lyrics.id === this.currentId && this.lyrics.synced;
+    reportSong({
+      title: song.title || song.id,
+      artist: song.artist || '',
+      album: '',
+      duration: this.durations[this.currentId] || 0,
+      currentTime: this.$.audio.currentTime || 0,
+      playing: !this.$.audio.paused,
+      lyrics: usable ? (this.lyrics.lines || []) : []
+    });
+  }
+
   prepareSong(id) {
     const song = this.songById(id);
     if (!song) {
@@ -749,6 +816,7 @@ class MusicPlayer {
     this.renderNowPlaying();
     this.renderList();
     this.loadLyrics(id);
+    this.publishNowPlaying();
   }
 
   playSong(id) {
@@ -987,6 +1055,8 @@ class MusicPlayer {
       };
       self.renderLyricsPanel();
       self.highlightLyric();
+      // 歌词到了（或用户刚改完）—— 把带时间轴的版本补报给桌面悬浮窗
+      self.publishNowPlaying();
     }).catch(function () {
       self.lyrics = { synced: false, lines: [], id: id };
       self.renderLyricsPanel();
@@ -1550,6 +1620,10 @@ class MusicPlayer {
       this.$.audio.pause();
       this.$.audio.removeAttribute('src');
     } catch (err) { /* 忽略 */ }
+    // 顺手告诉服务端「这个源不放了」：桌面悬浮窗据此立刻淡出。
+    // 不补这一条也不会一直挂着 —— 服务端有 10 秒的过期判定 —— 但那样
+    // 用户关掉窗口后歌词还会在屏幕上停留十秒，看起来像没关掉。
+    reportStop();
   }
 }
 

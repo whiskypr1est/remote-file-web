@@ -1,0 +1,61 @@
+{
+  "name": "desktop-lyrics",
+  "version": "1.0.0",
+  "private": true,
+  "description": "桌面歌词悬浮窗：把虚拟桌面里音乐播放器的歌词显示在屏幕最上层",
+  "main": "src/main.js",
+  "author": "远程仿真桌面",
+  "license": "MIT",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --win",
+    "dist:portable": "electron-builder --win portable",
+    "dist:dir": "electron-builder --win --dir"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "electron": "^32.2.0",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "com.remotedesktop.desktoplyrics",
+    "productName": "桌面歌词",
+    "copyright": "远程仿真桌面",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "src/**/*",
+      "package.json"
+    ],
+    "win": {
+      "icon": "build/icon.ico",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        },
+        {
+          "target": "portable",
+          "arch": ["x64"]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "桌面歌词",
+      "artifactName": "桌面歌词-安装版-${version}.${ext}",
+      "uninstallDisplayName": "桌面歌词 ${version}"
+    },
+    "portable": {
+      "artifactName": "桌面歌词-便携版-${version}.${ext}"
+    }
+  }
+}
