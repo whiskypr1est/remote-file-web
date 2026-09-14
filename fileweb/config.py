@@ -176,6 +176,33 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "unrar_path": "",
     },
 
+    # ★ 虚拟桌面里的「任务管理器」窗口（只读监控：CPU / 内存 / 网络 / GPU / 进程）
+    "sysmon": {
+        # 是否启用。它**只读**，不提供结束进程的能力；但进程列表会暴露
+        # 服务器上正在跑哪些程序（含所属用户名），不需要这个信息面就关掉。
+        "enabled": True,
+        # 一次最多返回多少个进程（按 CPU 或内存排序后取前 N）
+        "top_n": 30,
+        # 前端自动刷新的默认间隔（秒）。只影响界面默认值，
+        # 真正的最小采集间隔由下面的 min_interval_seconds 决定。
+        "refresh_seconds": 2,
+        # 服务端两次**真正采集**之间的最小间隔（秒）。多个浏览器同时开着
+        # 任务管理器时，靠它可以避免各自触发一次完整的进程枚举。
+        "min_interval_seconds": 0.5,
+    },
+
+    # ★ 按文件名搜索（开始菜单搜索框用）
+    # 这是**全盘递归遍历**，所以下面几道刹车不是可选项：任一触发都会带着
+    # 已有结果返回并标记 truncated，而不是让一个请求把服务占住好几分钟。
+    "search": {
+        # 一次最多返回多少条结果（前端可用 limit 覆盖，硬上限 500）
+        "max_results": 100,
+        # 扫过多少个条目就收工，防止在超大目录树里空转
+        "max_scanned": 200000,
+        # 墙钟时间预算（秒）。到点带着已有结果返回
+        "timeout_seconds": 8,
+    },
+
     "preview": {
         # 文本预览单次最多读取多少 KB（防止打开几个 GB 的日志卡死浏览器）
         "text_max_kb": 2048,
@@ -309,6 +336,9 @@ def load(path: Optional[str] = None, create_if_missing: bool = True) -> Dict[str
             return copy.deepcopy(DEFAULT_CONFIG)
 
         fresh, password = _build_fresh_config()
+        # 首次生成时也要把来源路径记上，否则紧接着的 persist()（例如用户
+        # 立刻去改密码）会写回模块默认路径，而那是另一个文件。
+        fresh["_cfg_path"] = cfg_path
         _atomic_write_json(cfg_path, fresh)
         _write_first_run_password(fresh["auth"]["username"], password,
                                   _password_file_beside(cfg_path))
@@ -345,12 +375,29 @@ def load(path: Optional[str] = None, create_if_missing: bool = True) -> Dict[str
     merged = _deep_merge(DEFAULT_CONFIG, user_cfg)
     merged["_raw_auth_keys"] = sorted(raw_auth.keys())
 
+    # ★ 记住这份配置是从哪个文件读出来的。
+    #   persist()（改壁纸、改密码）必须写回**同一个文件**；cfg 被传给
+    #   create_app() 之后路径就丢了，只能靠这里带着走。
+    #   不带这一项时，用 --config 起的实例会把真实部署的 config.json 覆盖掉。
+    merged["_cfg_path"] = cfg_path
+
     return prepare(merged, cfg_path)
 
 
 def save(cfg: Dict[str, Any], path: Optional[str] = None) -> None:
-    """保存配置（会自动剔除内部字段与未变更的敏感信息处理）。"""
-    cfg_path = path or CONFIG_PATH
+    """
+    保存配置（会自动剔除内部字段）。
+
+    ★ 目标路径的优先级：显式参数 > 配置里记着的来源路径 > 模块默认。
+
+    中间那一档不是可有可无的：`deps.AppState.persist()`（改壁纸、改密码）
+    拿到的是 `load()` 读出来的那份 cfg，因此必须写回**它被读出来的那个文件**。
+    少了这一档，用 `--config 临时配置` 起一个实例时，persist() 会写到模块默认
+    的 config.json 上 —— 也就是**真实部署的那一份**。这不是假想：
+    测试里起的服务就是这么把真实 config.json 覆盖成测试配置的
+    （端口变成随机值、标题变成 fileweb-test），服务一重启就再也访问不到。
+    """
+    cfg_path = path or cfg.get("_cfg_path") or CONFIG_PATH
     clean = {k: v for k, v in cfg.items() if not k.startswith("_")}
     _atomic_write_json(cfg_path, clean)
 

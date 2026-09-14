@@ -13,6 +13,7 @@ import { wm } from './wins.js';
 import { openExplorer } from './explorer.js';
 import { openPreview } from './preview.js';
 import { openTerminal } from './terminal.js';
+import { openTaskManager } from './taskmgr.js';
 import { initSessionState, restoreState } from './sessionstate.js';
 
 const WEEKDAYS = ['星期日', '星期一', '星期二', '星期三', '星期四', '星期五', '星期六'];
@@ -100,6 +101,17 @@ export class Desktop {
    */
   terminalEnabled() {
     return ((this.info.features || {}).terminal === true);
+  }
+
+  /**
+   * 任务管理器（只读系统监控）是否可用。
+   *
+   * 与 terminalEnabled 一样只认明确的 true：服务端的 features.sysmon 由
+   * config.json 的 sysmon.enabled 决定，两边口径一致才不会出现
+   * 「桌面显示入口、点开却是 403」。
+   */
+  sysmonEnabled() {
+    return ((this.info.features || {}).sysmon === true);
   }
 
   /* =========================================================================
@@ -222,6 +234,17 @@ export class Desktop {
         iconName: 'code',        // icons.js 没有专用 terminal 图标，用最接近的 code
         kind: 'builtin',
         onOpen: function () { openTerminal(self); }
+      });
+    }
+
+    // 任务管理器（只读系统监控）：同样由服务端 sysmon.enabled 决定是否出现
+    if (this.sysmonEnabled()) {
+      items.push({
+        key: 'taskmgr',
+        label: '任务管理器',
+        iconName: 'activity',
+        kind: 'builtin',
+        onOpen: function () { openTaskManager(self); }
       });
     }
 
@@ -458,7 +481,10 @@ export class Desktop {
 
     const roots = this.info.roots || [];
 
-    let html = '';
+    let html = '<div class="sm-search">' +
+      '<input type="text" id="smSearch" placeholder="搜索程序与文件…" ' +
+      'autocomplete="off" spellcheck="false">' +
+      '</div>';
     html += '<div class="sm-user">' +
       '<div class="sm-avatar">' + icon('user') + '</div>' +
       '<div><div class="sm-user-name">' + ui.escapeHtml(user) + '</div>' +
@@ -480,6 +506,14 @@ export class Desktop {
         '<span class="sm-hint">CMD</span></div>';
     }
 
+    // 任务管理器：只读系统监控，入口同样由服务端决定
+    if (this.sysmonEnabled()) {
+      html += '<div class="sm-item" data-action="taskmgr">' +
+        '<span class="sm-ico">' + icon('activity') + '</span>' +
+        '<span class="sm-text">任务管理器</span>' +
+        '<span class="sm-hint">性能 / 进程</span></div>';
+    }
+
     roots.forEach(function (root) {
       html += '<div class="sm-item" data-action="root" data-root="' + ui.escapeHtml(root.id) + '">' +
         '<span class="sm-ico">' + icon('drive') + '</span>' +
@@ -488,6 +522,10 @@ export class Desktop {
     });
 
     html += '<div class="sm-sep"></div>';
+
+    html += '<div class="sm-item" data-action="password">' +
+      '<span class="sm-ico">' + icon('user') + '</span>' +
+      '<span class="sm-text">修改密码</span></div>';
 
     html += '<div class="sm-item" data-action="about">' +
       '<span class="sm-ico">' + icon('app-about') + '</span>' +
@@ -499,12 +537,19 @@ export class Desktop {
 
     html += '</div>';
 
+    // 文件搜索结果挂在这两个节点里（由 bindStartMenuSearch 填充）
+    html += '<div class="sm-sep" id="smFileSep" hidden></div>';
+    html += '<div id="smFileList"></div>';
+
     html += '<div class="sm-foot">' +
       '<div class="sm-foot-btn danger" data-action="logout">' + icon('logout') + '<span>注销</span></div>' +
       '<div class="sm-version">v' + ui.escapeHtml(this.info.app.version) + '</div>' +
       '</div>';
 
     this.startMenu.innerHTML = html;
+
+    // 搜索框就在刚写进去的 HTML 里，必须等渲染完再挂事件
+    this.bindStartMenuSearch();
 
     this.startMenu.querySelectorAll('.sm-item, .sm-foot-btn').forEach(function (el) {
       el.addEventListener('click', function () {
@@ -515,8 +560,12 @@ export class Desktop {
           openExplorer(self, '', '');
         } else if (action === 'terminal') {
           openTerminal(self);
+        } else if (action === 'taskmgr') {
+          openTaskManager(self);
         } else if (action === 'root') {
           openExplorer(self, el.dataset.root, '');
+        } else if (action === 'password') {
+          self.changePassword();
         } else if (action === 'about') {
           self.showAbout();
         } else if (action === 'wallpaper') {
@@ -695,7 +744,17 @@ export class Desktop {
         });
       }
 
+      // 任务管理器入口（同样只在服务端开启时出现）
+      if (self.sysmonEnabled()) {
+        menuItems.push({
+          label: '打开任务管理器',
+          iconName: 'activity',
+          onClick: function () { openTaskManager(self); }
+        });
+      }
+
       menuItems.push(
+        { label: '修改密码…', iconName: 'user', onClick: function () { self.changePassword(); } },
         { label: '更换桌面壁纸…', iconName: 'image', onClick: function () { self.changeWallpaper(); } },
         {
           label: '恢复默认壁纸', iconName: 'rotate-left',
@@ -754,6 +813,7 @@ export class Desktop {
     text += '  · 删除到回收站：' + (features.recycle_bin ? '可用' : '不可用（将永久删除）') + '\n';
     text += '  · 缩略图：' + (features.thumbnails ? '已启用' : '已关闭') + '\n';
     text += '  · 命令提示符：' + (features.terminal ? '已启用' : '已关闭') + '\n';
+    text += '  · 任务管理器：' + (features.sysmon ? '已启用' : '已关闭') + '\n';
     text += '  · 单文件上传上限：' + (info.limits.max_upload_mb || 2048) + ' MB\n';
     text += '  · 会话有效期：' + (info.limits.session_hours || 12) + ' 小时\n\n';
 
@@ -762,6 +822,193 @@ export class Desktop {
     text += '  · pdf.js ' + (versions.pdfjs || '未知') + '\n';
 
     ui.showAlert('关于 ' + (info.app.title || info.app.name), text, 'app-about');
+  }
+
+  /**
+   * 开始菜单搜索框。
+   *
+   * 分成互补的两层，因为「找东西」其实是两种不同的需求：
+   *
+   *   1. **本地即时过滤**（零延迟）：已经在菜单里的程序、根目录、桌面快捷方式，
+   *      边打边筛。对应「我知道自己要开哪个，只是懒得在列表里找」。
+   *   2. **服务端文件搜索**（防抖 300ms、满 2 个字符才发）：递归搜文件名。
+   *      对应「我只记得文件名里有某几个字」—— 这一层本地做不到。
+   *
+   * 两层同时生效：本地过滤先把菜单项筛掉，文件结果追加在菜单下方。
+   */
+  bindStartMenuSearch() {
+    const self = this;
+    const input = this.startMenu.querySelector('#smSearch');
+    if (!input) {
+      return;
+    }
+
+    const fileList = this.startMenu.querySelector('#smFileList');
+    const fileSep = this.startMenu.querySelector('#smFileSep');
+
+    let debounce = null;
+    let seq = 0;      // 请求序号：只认最后一次发出的那个请求的结果
+
+    function clearFiles() {
+      if (fileList) {
+        fileList.innerHTML = '';
+      }
+      if (fileSep) {
+        fileSep.hidden = true;
+      }
+    }
+
+    function filterLocal(query) {
+      let visible = 0;
+      self.startMenu.querySelectorAll('.sm-item').forEach(function (el) {
+        if (fileList && fileList.contains(el)) {
+          return;        // 文件结果不参与本地过滤
+        }
+        const label = el.querySelector('.sm-text');
+        const text = ((label || el).textContent || '').toLowerCase();
+        const hit = !query || text.indexOf(query) !== -1;
+        el.hidden = !hit;
+        if (hit) {
+          visible++;
+        }
+      });
+
+      // 搜索时把分组分隔线也收起来，否则筛空之后会剩几条孤零零的横线
+      self.startMenu.querySelectorAll('.sm-sep').forEach(function (el) {
+        if (el.id === 'smFileSep') {
+          return;        // 文件结果的那条分隔线由 clearFiles/renderFiles 管
+        }
+        el.hidden = !!query;
+      });
+
+      return visible;
+    }
+
+    function renderFiles(items) {
+      if (!fileList) {
+        return;
+      }
+      if (!items.length) {
+        clearFiles();
+        return;
+      }
+      if (fileSep) {
+        fileSep.hidden = false;
+      }
+
+      fileList.innerHTML = '';
+      items.forEach(function (item) {
+        const el = document.createElement('div');
+        el.className = 'sm-item sm-file-item';
+        el.innerHTML = '<span class="sm-ico">' +
+          icon(item.is_dir ? 'folder' : 'file') + '</span>' +
+          '<span class="sm-text">' + ui.escapeHtml(item.name) + '</span>' +
+          '<span class="sm-hint">' + ui.escapeHtml(item.dir || '') + '</span>';
+        el.title = (item.dir ? item.dir + '/' : '') + item.name;
+
+        el.addEventListener('click', function () {
+          // 打开「所在目录」而不是直接预览：搜到之后通常是要在那个目录里继续
+          // 操作的，而且目录能直接交给资源管理器，不必再写一套结果窗口。
+          self.closeStartMenu();
+          openExplorer(self, item.root, item.dir || '');
+        });
+
+        fileList.appendChild(el);
+      });
+    }
+
+    input.addEventListener('input', function () {
+      const query = input.value.trim();
+      filterLocal(query.toLowerCase());
+
+      if (debounce) {
+        clearTimeout(debounce);
+        debounce = null;
+      }
+      if (query.length < 2) {
+        clearFiles();
+        return;
+      }
+
+      debounce = setTimeout(function () {
+        const mine = ++seq;
+        api.searchFiles(query).then(function (data) {
+          if (mine !== seq) {
+            return;      // 这期间用户又敲了字，这份结果已经过时
+          }
+          renderFiles((data && data.results) || []);
+        }).catch(function (err) {
+          if (mine !== seq) {
+            return;
+          }
+          clearFiles();
+          if (err && err.status !== 401 && err.status !== 400) {
+            ui.toast('搜索失败：' + ((err && err.message) || '未知错误'), 'warn');
+          }
+        });
+      }, 300);
+    });
+
+    input.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter') {
+        // 回车打开筛出来的第一项（本地项排在文件结果前面）
+        const first = self.startMenu.querySelector('.sm-item:not([hidden])');
+        if (first) {
+          e.preventDefault();
+          first.click();
+        }
+      } else if (e.key === 'Escape' && input.value) {
+        // 第一次 Esc 只清空搜索、不关菜单。外层的全局 Esc 会关掉整个菜单，
+        // 所以这里必须阻止它继续冒泡。
+        e.preventDefault();
+        e.stopPropagation();
+        input.value = '';
+        filterLocal('');
+        clearFiles();
+      }
+    });
+
+    // 打开菜单就聚焦搜索框：Windows 的开始菜单同样是「一打开就能打字」
+    setTimeout(function () {
+      input.focus();
+    }, 60);
+  }
+
+  /**
+   * 修改登录密码。
+   *
+   * 服务端改完会**轮换会话密钥**，所有已签发的会话（含当前这个）立即失效；
+   * 所以成功后直接跳回登录页，而不是继续待在这个已经过期的页面上 ——
+   * 否则接下来每一次点击都会撞上 401 被踢走，用户会觉得莫名其妙。
+   */
+  changePassword() {
+    ui.showPasswordDialog({
+      title: '修改密码',
+      hint: '修改成功后，所有已登录的设备（包括当前浏览器）都会退出，需要用新密码重新登录。'
+    }).then(function (values) {
+      if (!values) {
+        return;
+      }
+      // 双保险：对话框里已经实时校验过（非法输入时「确定」是置灰的），
+      // 但 Enter 提交走的是 openDialog 内部的键盘处理，绕过了那个 disabled。
+      if (!values.current || !values.next) {
+        ui.toast('请把三项都填写完整', 'warn');
+        return;
+      }
+      if (values.next.length < 8) {
+        ui.toast('新密码至少需要 8 位', 'warn');
+        return;
+      }
+
+      api.changePassword(values.current, values.next).then(function (res) {
+        ui.showAlert('密码已修改', (res && res.message) || '请用新密码重新登录。', 'success')
+          .then(function () {
+            api.redirectToLogin();
+          });
+      }).catch(function (err) {
+        ui.showAlert('修改失败', (err && err.message) || '未知错误', 'error');
+      });
+    });
   }
 
   logout() {

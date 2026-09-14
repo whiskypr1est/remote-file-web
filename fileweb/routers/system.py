@@ -101,6 +101,10 @@ async def system_info(request: Request) -> Dict[str, Any]:
             "session_hours": int(auth_cfg.get("session_hours") or 12),
             # 命令行输出在浏览器侧的保留上限（KB），前端据此裁剪滚动缓冲
             "terminal_output_kb": int((cfg.get("terminal") or {}).get("max_output_kb") or 512),
+            # 任务管理器：把配置里的刷新间隔与进程条数下发给前端，
+            # 免得界面自己写死一套、与 config.json 对不上
+            "sysmon_refresh_seconds": float((cfg.get("sysmon") or {}).get("refresh_seconds") or 2),
+            "sysmon_top_n": int((cfg.get("sysmon") or {}).get("top_n") or 30),
         },
         "features": {
             # 是否装了 LibreOffice：没装的话 doc/xls/ppt 只能降级预览或提示
@@ -109,6 +113,8 @@ async def system_info(request: Request) -> Dict[str, Any]:
             "thumbnails": bool((cfg.get("thumbs") or {}).get("enabled", True)),
             # 命令行功能：默认开启，前端据此决定是否显示入口
             "terminal": bool((cfg.get("terminal") or {}).get("enabled", True)),
+            # 任务管理器（只读系统监控）：同样据此决定开始菜单里是否出现入口
+            "sysmon": bool((cfg.get("sysmon") or {}).get("enabled", True)),
             "text_encodings": ["utf-8", "gb18030", "big5", "latin-1"],
         },
         "versions": _read_vendor_versions(),

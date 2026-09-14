@@ -119,10 +119,82 @@ def _fmt_time(timestamp: float) -> str:
 # 目录列举
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# 协作式取消 + 分块复制
+# ---------------------------------------------------------------------------
+
+# 分块大小。1MB 是「进度更新够细」与「系统调用次数够少」之间的折中：
+# 再小会让大文件的 write 次数暴涨，再大则进度条会一跳一跳的。
+COPY_CHUNK_BYTES = 1024 * 1024
+
+
+class OperationCancelled(Exception):
+    """
+    调用方要求中止这次操作（协作式取消）。
+
+    刻意不做成「强杀」：Python 没法安全地打断一个正在写文件的线程，
+    硬杀会留下写了一半的文件。所以取消的语义是「在下一个检查点尽快退出」，
+    调用方拿到这个异常后应当把结果如实标成「已取消」而不是「失败」。
+    """
+
+
+def copy_file_tracked(source: str, target: str, progress=None,
+                      should_cancel=None) -> None:
+    """
+    分块复制单个文件，每块回调一次进度、每个块边界检查一次取消。
+
+    没有用 shutil.copy2：它一口气拷完，中途既报不了进度、也响应不了取消 ——
+    而「复制一个几十 GB 的文件」恰恰是最需要这两样东西的场景，
+    也正是本项目「界面看着像卡死」的主要来源。
+    """
+    with open(source, "rb") as src, open(target, "wb") as dst:
+        while True:
+            if should_cancel is not None and should_cancel():
+                raise OperationCancelled("复制已取消")
+            chunk = src.read(COPY_CHUNK_BYTES)
+            if not chunk:
+                break
+            dst.write(chunk)
+            if progress is not None:
+                progress(len(chunk))
+
+    try:
+        shutil.copystat(source, target)
+    except OSError:
+        # 时间戳/权限位复制失败不该让整次复制算失败：有的目标文件系统
+        # 本来就不支持（FAT、部分网络盘），内容已经写对了才是关键。
+        pass
+
+
 # Windows 文件属性位
 _FILE_ATTRIBUTE_HIDDEN = 0x2
 _FILE_ATTRIBUTE_SYSTEM = 0x4
 _FILE_ATTRIBUTE_READONLY = 0x1
+# 重解析点：目录联接（junction）与符号链接都带这一位。
+# ★ os.path.islink() 在 Windows 上**认不出目录联接**，而联接足以让递归遍历
+#   成环（C:\Documents and Settings 就指向 C:\Users 那一类），所以遍历时
+#   必须额外看这一位 —— 只看 islink 会漏掉联接。
+_FILE_ATTRIBUTE_REPARSE_POINT = 0x400
+
+
+def is_link_or_junction(path: str) -> bool:
+    """
+    判断路径是不是符号链接 / 目录联接（junction）。
+
+    递归遍历（按文件名搜索、打包）必须先用它把这类目录剔掉：它们既可能成环，
+    也可能把遍历带出根目录之外，而 os.walk(followlinks=False) 在 Windows 上
+    拦不住目录联接（联接在 POSIX 语义里不算 symlink）。
+
+    取不到状态时**保守返回 True**（当作「别进去」）：遍历少走一个目录只是漏结果，
+    跟着一个坏链接钻进去却可能让请求再也回不来。
+    """
+    try:
+        if os.path.islink(path):
+            return True
+        attributes = getattr(os.stat(path), "st_file_attributes", 0) or 0
+    except OSError:
+        return True
+    return bool(attributes & _FILE_ATTRIBUTE_REPARSE_POINT)
 
 
 def _entry_from_direntry(entry: os.DirEntry) -> Optional[Dict[str, Any]]:
@@ -274,6 +346,34 @@ def make_directory(parent_abs: str, name: str) -> str:
         raise FileExistsError("已存在同名文件或文件夹：%s" % safe_name)
 
     os.mkdir(target)
+    return target
+
+
+def create_file(parent_abs: str, name: str) -> str:
+    """
+    在指定目录下新建一个**空文件**，返回新文件的绝对路径。
+
+    为什么用 os.open(O_CREAT|O_EXCL) 而不是「先 exists() 再 open()」：
+        「先查再建」之间有竞态窗口，两次调用之间文件可能已被别的程序创建；
+        而 O_EXCL 让「不存在才创建」成为一次原子操作。
+
+    为什么不用 open(..., "w")：
+        该模式遇到同名文件会**直接清空**。新建文件覆盖掉别人的内容是最难
+        挽回的一类事故，所以这里保证绝不覆盖任何已有文件（同名一律报错，
+        由上层翻译成 409，前端会提示换个名字）。
+    """
+    safe_name = sanitize_filename(name)
+    target = os.path.join(parent_abs, safe_name)
+
+    # 同名目录单独报一句更贴切的提示：O_EXCL 只会给一个笼统的 EEXIST
+    if os.path.isdir(target):
+        raise FileExistsError("已存在同名文件夹：%s" % safe_name)
+
+    try:
+        handle = os.open(target, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+    except FileExistsError:
+        raise FileExistsError("已存在同名文件或文件夹：%s" % safe_name)
+    os.close(handle)
     return target
 
 
@@ -433,6 +533,113 @@ def delete_entries(abs_paths: List[str], use_recycle_bin: bool = True) -> Dict[s
 # ---------------------------------------------------------------------------
 # 上传相关
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# 按文件名搜索
+# ---------------------------------------------------------------------------
+
+# 三重刹车。全盘搜索在机械盘上可能要几分钟，而这是一个 HTTP 请求：
+# 不能让浏览器一直挂着，更不能让一个请求把服务占住。三者任一触发都会
+# **带着已有结果返回**并在 truncated/reason 里如实说明，而不是假装「就这些」。
+DEFAULT_SEARCH_RESULTS = 100
+DEFAULT_SEARCH_SCANNED = 200000
+DEFAULT_SEARCH_SECONDS = 8.0
+
+
+def search_files(roots: Iterable[Dict[str, Any]], query: str, *,
+                 max_results: int = DEFAULT_SEARCH_RESULTS,
+                 max_scanned: int = DEFAULT_SEARCH_SCANNED,
+                 time_budget: float = DEFAULT_SEARCH_SECONDS) -> Dict[str, Any]:
+    """
+    在若干根目录下按**文件名**递归搜索（不搜文件内容）。
+
+    几个关键取舍：
+
+    * **不跟进符号链接 / 目录联接**（followlinks=False，并显式过滤掉它们）。
+      Windows 上目录联接足以让遍历成环（C:\\Documents and Settings 就指向
+      Users），一旦成环这个请求就再也回不来了 —— 与打包时是同一套判断。
+    * **只搜文件名，不搜内容**。全盘 grep 是另一个量级的事，会真的把磁盘
+      读穿；「我记得文件名里有个 xxx」才是找文件最常见的形态。
+    * **攒够就返回**，不做全量统计。用户要的是列表，不是「共找到 N 条」，
+      所以凑满 max_results 立刻收工，省下的是用户的时间。
+    """
+    needle = str(query or "").strip().lower()
+    if not needle:
+        return {"results": [], "scanned": 0, "truncated": False, "reason": ""}
+
+    started = time.monotonic()
+    results: List[Dict[str, Any]] = []
+    scanned = 0
+    truncated = False
+    reason = ""
+
+    for root_cfg in roots or ():
+        base = str(root_cfg.get("path") or "")
+        if not base or not os.path.isdir(base):
+            continue
+        root_id = str(root_cfg.get("id") or "")
+
+        for current, dirs, files in os.walk(base, followlinks=False):
+            if truncated:
+                break
+
+            # 先剔除目录联接/符号链接：它们既可能成环，也可能指向根目录之外
+            dirs[:] = [name for name in dirs
+                       if not is_link_or_junction(os.path.join(current, name))]
+
+            for is_dir, bucket in ((True, dirs), (False, files)):
+                for name in bucket:
+                    scanned += 1
+                    if scanned > max_scanned:
+                        truncated, reason = True, "扫描的条目数已达上限"
+                        break
+
+                    if needle not in name.lower():
+                        continue
+
+                    full = os.path.join(current, name)
+                    rel = os.path.relpath(full, base).replace(os.sep, "/")
+                    parent = os.path.dirname(rel)
+
+                    size = 0
+                    mtime = 0.0
+                    if not is_dir:
+                        try:
+                            info = os.stat(full)
+                            size = int(info.st_size)
+                            mtime = float(info.st_mtime)
+                        except OSError:
+                            # 权限不足/文件刚被删掉都很正常，跳过元信息即可，
+                            # 没必要因为这个把整条结果丢掉
+                            pass
+
+                    results.append({
+                        "root": root_id,
+                        "name": name,
+                        "rel": rel,
+                        "dir": "" if parent in (".", "") else parent,
+                        "is_dir": is_dir,
+                        "size": size,
+                        "mtime": mtime,
+                    })
+
+                    if len(results) >= max_results:
+                        truncated, reason = True, "结果数已达上限"
+                        break
+
+                if truncated:
+                    break
+
+            if not truncated and (time.monotonic() - started) > time_budget:
+                truncated, reason = True, "搜索时间已达上限（%.0f 秒）" % time_budget
+
+    return {
+        "results": results,
+        "scanned": scanned,
+        "truncated": truncated,
+        "reason": reason,
+    }
+
 
 def resolve_upload_target(directory: str, filename: str, blocked_extensions: Iterable[str],
                           overwrite: bool = False) -> Tuple[str, str]:

@@ -734,6 +734,42 @@ input, textarea, .selectable, .selectable * {
   flex: 1 1 auto;
 }
 
+/* ---- 开始菜单搜索框 ---- */
+
+.sm-search {
+  padding: 10px 12px 6px;
+}
+
+.sm-search input {
+  width: 100%;
+  height: 30px;
+  padding: 0 10px;
+  font-size: 13px;
+  font-family: inherit;
+  color: #2b3038;
+  background: #fff;
+  border: 1px solid #b9bfc7;
+  border-radius: 3px;
+  outline: none;
+  user-select: text;
+}
+
+.sm-search input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(10, 106, 214, .18);
+}
+
+/* 被搜索筛掉的项与分组线一律收起 */
+.sm-item[hidden],
+.sm-sep[hidden] {
+  display: none;
+}
+
+/* 文件搜索结果的路径提示压小一点，避免盖过文件名 */
+.sm-file-item .sm-hint {
+  font-size: 11px;
+}
+
 .sm-item {
   display: flex;
   align-items: center;
@@ -1066,6 +1102,73 @@ input, textarea, .selectable, .selectable * {
 .dialog-body input:focus {
   border-color: var(--accent);
   box-shadow: 0 0 0 2px rgba(10, 106, 214, .18);
+}
+
+/* 新建文件对话框里的扩展名下拉框：与同区域的文本框保持同一套观感 */
+.dialog-body select {
+  width: 100%;
+  height: 32px;
+  padding: 0 8px;
+  font-size: 13px;
+  color: #2b3038;
+  border: 1px solid #b9bfc7;
+  border-radius: 3px;
+  outline: none;
+  background: #fff;
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.dialog-body select:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(10, 106, 214, .18);
+}
+
+/* ---- 多字段对话框（修改密码） ---- */
+
+.dlg-field {
+  margin-bottom: 10px;
+}
+
+.dlg-label {
+  display: block;
+  margin-bottom: 4px;
+  font-size: 12px;
+  color: #46505c;
+}
+
+.dialog-body .dlg-field input {
+  width: 100%;
+  height: 32px;
+  padding: 0 10px;
+  font-size: 13px;
+  border: 1px solid #b9bfc7;
+  border-radius: 3px;
+  outline: none;
+  font-family: inherit;
+  user-select: text;
+}
+
+.dialog-body .dlg-field input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(10, 106, 214, .18);
+}
+
+/* 实时校验的提示行：默认占位不显示，出问题时才上色 */
+.dlg-inline-hint {
+  min-height: 16px;
+  font-size: 12px;
+  color: var(--text-weak);
+}
+
+.dlg-inline-hint.is-error {
+  color: #c0392b;
+}
+
+.dialog-foot .btn:disabled {
+  opacity: .5;
+  cursor: default;
+  box-shadow: none;
 }
 
 .dialog-hint {

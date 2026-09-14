@@ -936,10 +936,98 @@ function buildSimple(container, ctx, title, text, iconName) {
   actions.appendChild(btn);
 }
 
+/**
+ * 压缩包内容浏览。
+ *
+ * 早先这里只有一句「压缩包不支持在线解压预览」，但「看里面有什么」这件事
+ * 本来就不需要解压：服务端的 archive.list_entries 是解压流程的第一道安全
+ * 校验（逐条目查名字、识别加密包、修 GBK 乱码），把它的结果直接给前端就够了。
+ * 所以现在打开压缩包能看到目录表，不必「先解压到磁盘、看完再删掉」。
+ *
+ * 仍然是**只读**：解压动作留在资源管理器的右键菜单里，这里只浏览 + 下载。
+ */
+function buildArchive(container, ctx) {
+  container.innerHTML =
+    '<div class="preview-toolbar">' +
+    '<span class="pv-label">' + ui.escapeHtml(ctx.name) + '</span>' +
+    '<span class="pv-meta" data-role="summary"></span>' +
+    '<span class="spacer"></span>' +
+    downloadButton(ctx) +
+    '</div>' +
+    '<div class="pv-body arc-body">' +
+    '<div class="arc-empty">正在读取压缩包内容…</div>' +
+    '</div>';
+
+  bindDownload(ctx, container.querySelector('[data-act="download"]'));
+
+  const body = container.querySelector('.pv-body');
+  const summary = container.querySelector('[data-role="summary"]');
+
+  api.archiveListing(ctx.rootId, ctx.rel).then(function (data) {
+    const entries = (data && data.entries) || [];
+
+    summary.textContent = String(data.format || '').toUpperCase() +
+      ' · ' + (data.entry_count || 0) + ' 项' +
+      (data.total_bytes ? ' · 展开后 ' + (data.total_text || '') : '');
+
+    let html = '';
+
+    // 解压遇到同名顶层项是**整体中止**的（见服务端 extract），
+    // 所以这里提前把冲突摆出来，别等用户点了「解压」才被拒。
+    if (data.conflict_count) {
+      const names = (data.conflicts || []).slice(0, 5).join('、');
+      html += '<div class="arc-warn">当前文件夹里已有同名项（' +
+        ui.escapeHtml(names) +
+        (data.conflict_count > 5 ? ' 等 ' + data.conflict_count + ' 项' : '') +
+        '），直接解压会被整体拒绝 —— 请先移走/改名，或解压到新建的子文件夹。</div>';
+    }
+
+    if (!entries.length) {
+      html += '<div class="arc-empty">这个压缩包里没有条目。</div>';
+    } else {
+      html += '<table class="arc-table"><thead><tr>' +
+        '<th>名称</th><th class="num">原始大小</th><th>类型</th>' +
+        '</tr></thead><tbody>';
+
+      entries.forEach(function (item) {
+        const kindText = item.is_dir
+          ? '文件夹'
+          : (item.is_link ? '链接（解压时跳过）' : '文件');
+
+        html += '<tr' + (item.is_link ? ' class="is-link"' : '') + '>' +
+          '<td class="arc-name" title="' + ui.escapeHtml(item.name) + '">' +
+          icon(item.is_dir ? 'folder' : 'file', 'arc-ico') +
+          '<span>' + ui.escapeHtml(item.name) + '</span></td>' +
+          '<td class="num">' +
+          (item.is_dir ? '' : ui.formatSize(item.size || 0)) + '</td>' +
+          '<td>' + ui.escapeHtml(kindText) + '</td>' +
+          '</tr>';
+      });
+
+      html += '</tbody></table>';
+
+      if (data.entry_count > entries.length) {
+        html += '<div class="arc-empty">共 ' + data.entry_count +
+          ' 项，这里只显示了前 ' + entries.length + ' 项。</div>';
+      }
+    }
+
+    body.innerHTML = html;
+  }).catch(function (err) {
+    // 加密包 / 损坏包 / 没装 UnRAR 都会落到这里，服务端给的是可读原因
+    messageBox(body, 'error', (err && err.message) || '读取压缩包失败',
+      [{
+        label: '下载文件', iconName: 'download',
+        onClick: function () {
+          api.triggerDownload(api.downloadUrl(ctx.rootId, ctx.rel));
+        }
+      }]);
+  });
+}
+
 /* ===========================================================================
    对外入口
    =========================================================================== */
-
 const WINDOW_SPECS = {
   image: { width: 1000, height: 700, iconName: 'image' },
   pdf: { width: 1020, height: 780, iconName: 'pdf' },
@@ -947,7 +1035,7 @@ const WINDOW_SPECS = {
   video: { width: 960, height: 660, iconName: 'video' },
   audio: { width: 720, height: 480, iconName: 'audio' },
   office: { width: 1020, height: 780, iconName: 'document' },
-  archive: { width: 620, height: 480, iconName: 'archive' },
+  archive: { width: 940, height: 640, iconName: 'archive' },
   other: { width: 620, height: 460, iconName: 'file' }
 };
 
@@ -1002,9 +1090,7 @@ export function openPreview(ctx) {
     } else if (kind === 'office') {
       buildOffice(container, localCtx);
     } else if (kind === 'archive') {
-      buildSimple(container, localCtx, '压缩文件',
-        '压缩包不支持在线解压预览，请下载后使用解压软件打开。' +
-        (localCtx.sizeText ? '\n文件大小：' + localCtx.sizeText : ''), 'archive');
+      buildArchive(container, localCtx);
     } else {
       buildSimple(container, localCtx, '文件信息',
         '该类型文件不支持在线预览。' +

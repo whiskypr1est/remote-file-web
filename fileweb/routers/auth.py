@@ -31,7 +31,13 @@ from ..deps import (
     read_session,
     session_max_age,
 )
-from ..security import csrf_token_for, sign_token, verify_password
+from ..security import (
+    csrf_token_for,
+    hash_password,
+    random_secret,
+    sign_token,
+    verify_password,
+)
 
 router = APIRouter(prefix="/api/auth", tags=["认证"])
 
@@ -145,6 +151,96 @@ async def login(request: Request, payload: LoginPayload) -> JSONResponse:
         # 因为部署在局域网 HTTP 环境，这里不能设 secure=True，否则 Cookie 根本不会被发送
     )
     return response
+
+
+# 新口令的最小长度。取 8 是常见下限：对单口令系统来说再长收益有限，
+# 而太短会让局域网内的暴力破解真的可行。
+MIN_PASSWORD_LENGTH = 8
+
+
+class PasswordPayload(BaseModel):
+    """修改口令的请求体。"""
+    current_password: str = ""
+    new_password: str = ""
+
+
+@router.post("/password")
+async def change_password(request: Request, payload: PasswordPayload) -> Dict[str, Any]:
+    """
+    修改登录口令。
+
+    四个要点，每条都对应一个真实的攻击面：
+
+    1. **必须校验当前口令。** 只认会话是不够的：会话 Cookie 一旦被窃取，
+       攻击者就能直接改口令、把真正的管理员永远锁在外面。要求重输当前口令，
+       等于把「改口令」这一步重新拉回到「知道口令」的证明上。
+
+    2. **复用登录那套失败锁定。** 当前口令同样可以被暴力猜；如果这里不限次数，
+       登录页的锁定就形同虚设 —— 绕过它只需要先有一个会话。
+
+    3. **成功后轮换 session_secret，让所有已签发的会话立即失效。**
+       这正好补上 README 里「修改密码不会让已登录的浏览器立即掉线」那条已知限制。
+       代价是当前这个会话也会失效，所以响应带 relogin=true，前端据此引导重新登录。
+
+    4. **顺手清掉明文兼容项 auth.password。** 它的优先级低于哈希，但只要留着，
+       旧口令就仍然能登录 —— 「改了密码却改不掉旧密码」是最容易被忽略的漏洞。
+    """
+    state = get_state(request)
+    cfg = state.cfg
+    auth = cfg.get("auth") or {}
+    ip = client_ip(request)
+
+    # 1) 是否处于锁定期（与登录共用同一份失败计数）
+    locked_seconds = state.login_locked_seconds(ip)
+    if locked_seconds > 0:
+        raise HTTPException(
+            status_code=429,
+            detail="尝试次数过多，请在 %d 秒后重试" % locked_seconds,
+        )
+
+    # 2) 校验当前口令
+    username = str(auth.get("username") or "admin")
+    if not _verify_credentials(cfg, username, payload.current_password or ""):
+        remaining = state.register_login_failure(
+            ip,
+            int(auth.get("max_login_fails") or 5),
+            int(auth.get("lockout_seconds") or 300),
+        )
+        if remaining <= 0:
+            raise HTTPException(
+                status_code=429,
+                detail="当前密码错误次数过多，已临时锁定，请稍后再试",
+            )
+        raise HTTPException(
+            status_code=403,
+            detail="当前密码不正确（还可尝试 %d 次）" % remaining,
+        )
+
+    # 3) 校验新口令
+    new_password = payload.new_password or ""
+    if len(new_password) < MIN_PASSWORD_LENGTH:
+        raise HTTPException(
+            status_code=400,
+            detail="新密码至少需要 %d 位" % MIN_PASSWORD_LENGTH,
+        )
+    if _safe_equals(new_password, payload.current_password or ""):
+        raise HTTPException(status_code=400, detail="新密码不能与当前密码相同")
+
+    # 4) 落盘：新哈希 + 清掉明文项 + 轮换会话密钥
+    state.clear_login_failures(ip)
+
+    auth["password_hash"] = hash_password(new_password)
+    auth["password"] = ""
+    auth["session_secret"] = random_secret(32)
+    cfg["auth"] = auth
+    state.persist()
+
+    return {
+        "ok": True,
+        "message": "密码已修改，请用新密码重新登录",
+        # 会话密钥已轮换 → 当前这个 Cookie 同时也失效了
+        "relogin": True,
+    }
 
 
 @router.post("/logout")

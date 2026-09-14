@@ -241,8 +241,23 @@ function openDialog(opts) {
     resolve = res;
   });
 
+  /**
+   * 取「确认时要交回去的值」。
+   *
+   * 默认是 #dlgInput 的 value。但有些对话框不止一个输入控件
+   * （例如「修改密码」要同时取 当前/新/确认 三个框），
+   * 这时调用方可以传 options.getValue(dialog) 自己决定返回什么。
+   */
   function currentInputValue() {
+    if (typeof options.getValue === 'function') {
+      return options.getValue(dialog);
+    }
     return inputEl ? inputEl.value : undefined;
+  }
+
+  /** 是否存在「能取值的输入控件」：决定确认时返回输入值还是按钮的静态值 */
+  function hasValueSource() {
+    return !!inputEl || typeof options.getValue === 'function';
   }
 
   // 按钮点击
@@ -251,7 +266,7 @@ function openDialog(opts) {
       const cfg = (options.buttons || [])[Number(btn.dataset.index)] || {};
       if (cfg.value === null) {
         close(null);
-      } else if (inputEl) {
+      } else if (hasValueSource()) {
         close(currentInputValue());
       } else {
         close(cfg.value);
@@ -265,11 +280,11 @@ function openDialog(opts) {
       e.preventDefault();
       e.stopPropagation();
       close(null);
-    } else if (e.key === 'Enter' && inputEl) {
+    } else if (e.key === 'Enter' && hasValueSource()) {
       e.preventDefault();
       e.stopPropagation();
       close(currentInputValue());
-    } else if (e.key === 'Enter' && !inputEl) {
+    } else if (e.key === 'Enter' && !hasValueSource()) {
       const primary = dialog.querySelector('.dialog-foot .btn.primary');
       if (primary) {
         e.preventDefault();
@@ -361,6 +376,213 @@ export function showPrompt(title, label, defaultValue, opts) {
       { text: options.okText || '确定', value: true, className: 'primary' }
     ]
   });
+}
+
+/* ---------------------------------------------------------------------------
+   新建文件的命名对话框（可自选扩展名）
+   --------------------------------------------------------------------------- */
+
+/**
+ * 常用扩展名快捷项。
+ * value === '' 是「不改动输入框」的占位项；'__none__' 表示真的不要扩展名。
+ */
+const FILE_EXT_PRESETS = [
+  ['', '常用类型（可选，选中后自动补到文件名）'],
+  ['.txt', '.txt — 文本文件'],
+  ['.md', '.md — Markdown'],
+  ['.py', '.py — Python'],
+  ['.js', '.js — JavaScript'],
+  ['.json', '.json — JSON'],
+  ['.html', '.html — 网页'],
+  ['.css', '.css — 样式表'],
+  ['.csv', '.csv — 表格'],
+  ['.xml', '.xml — XML'],
+  ['.yml', '.yml — YAML'],
+  ['.ini', '.ini — 配置'],
+  ['.log', '.log — 日志'],
+  ['.sql', '.sql — SQL'],
+  ['.sh', '.sh — Shell 脚本'],
+  ['__none__', '（无扩展名）']
+];
+
+/**
+ * 去掉文件名末尾的扩展名，返回「主文件名」。
+ * 以点开头的名字（.gitignore、.bashrc）不当作有扩展名，原样返回。
+ */
+function stripExtension(name) {
+  const text = String(name == null ? '' : name);
+  const cut = Math.max(text.lastIndexOf('/'), text.lastIndexOf('\\'));
+  const base = cut >= 0 ? text.slice(cut + 1) : text;
+  const dot = base.lastIndexOf('.');
+  if (dot <= 0) {
+    return text;   // 没有点；或点就在开头（.gitignore 这类）
+  }
+  return text.slice(0, cut + 1 + dot);
+}
+
+/**
+ * 「新建文件」对话框：文件名输入框 + 常用扩展名下拉。
+ *
+ * 设计要点：**文件名输入框是唯一的数据来源**，下拉框只做「快捷补全」——
+ * 选中某个类型时就地替换输入框里文件名的扩展名部分。
+ * 不做成「主文件名 + 扩展名」两个独立字段，是为了避免出现
+ * 「下拉框显示 .txt、而输入框里其实是 .md」这种两个真相打架的情况。
+ * 现在这套既能点选，也保留直接敲任意后缀（含列表里没有的，如 .tsv）的自由。
+ *
+ * @returns {Promise<string|null>} 完整文件名；取消返回 null
+ */
+export function showFileNameDialog(opts) {
+  const options = opts || {};
+
+  let selectHtml = '<select id="dlgFileExt">';
+  FILE_EXT_PRESETS.forEach(function (pair) {
+    selectHtml += '<option value="' + escapeHtml(pair[0]) + '">' + escapeHtml(pair[1]) + '</option>';
+  });
+  selectHtml += '</select>';
+
+  const body = '<div style="margin-bottom:8px">' +
+    escapeHtml(options.label || '请输入文件名（含扩展名）：') + '</div>' + selectHtml;
+
+  const promise = openDialog({
+    title: options.title || '新建文件',
+    bodyHtml: body,
+    iconName: options.iconName || 'file-text',
+    input: {
+      value: options.defaultName || '新建文本文档.txt',
+      placeholder: options.placeholder || '例如：notes.md'
+    },
+    hint: options.hint || '扩展名可以点上面的下拉框，也可以直接敲。',
+    buttons: [
+      { text: '取消', value: null },
+      { text: options.okText || '创建', value: true, className: 'primary' }
+    ]
+  });
+
+  // openDialog 是把 DOM **同步**建好之后才返回 promise 的（见该函数内
+  // dialog.innerHTML / appendChild 都在 return 之前），
+  // 所以这里立刻就能拿到刚渲染出来的下拉框并挂上事件，不需要额外的回调。
+  const select = document.getElementById('dlgFileExt');
+  const nameInput = document.getElementById('dlgInput');
+  if (select && nameInput) {
+    select.addEventListener('change', function () {
+      const ext = select.value;
+      if (!ext) {
+        return;                       // 占位项：不动输入框
+      }
+      const base = stripExtension(nameInput.value);
+      nameInput.value = (ext === '__none__') ? base : base + ext;
+      nameInput.focus();
+      // 只选中「主文件名」那一段方便直接改写；扩展名留在选区之外不动它
+      const keep = (ext === '__none__') ? 0 : ext.length;
+      nameInput.setSelectionRange(0, Math.max(0, nameInput.value.length - keep));
+    });
+  }
+
+  return promise;
+}
+
+/* ---------------------------------------------------------------------------
+   修改密码对话框
+   --------------------------------------------------------------------------- */
+
+/** 与服务端 auth.py 的 MIN_PASSWORD_LENGTH 保持一致 */
+const PASSWORD_MIN_LENGTH = 8;
+
+/**
+ * 「修改密码」对话框：当前密码 / 新密码 / 确认新密码 三个框。
+ *
+ * 为什么单独写一个、而不是连开三次 showPrompt：
+ *   三次提示要用户分三步输、中间还不能回头改，体验很差；而且只有三个框
+ *   摆在一起，才能**当场**校验「两次新密码是否一致」。
+ *
+ * 校验是双保险：
+ *   * 输入时实时校验，不通过就把「确定」按钮置灰并给出提示 ——
+ *     正常操作提交不出坏数据；
+ *   * 调用方仍会再校验一遍，用于兜住按 Enter 提交这条路径
+ *     （Enter 走的是 openDialog 内部的键盘处理，绕过了按钮的 disabled）。
+ *
+ * @returns {Promise<{current: string, next: string}|null>} 取消返回 null
+ */
+export function showPasswordDialog(opts) {
+  const options = opts || {};
+
+  function field(id, label, placeholder, autocomplete) {
+    return '<div class="dlg-field">' +
+      '<label class="dlg-label" for="' + id + '">' + escapeHtml(label) + '</label>' +
+      '<input type="password" id="' + id + '" autocomplete="' + autocomplete + '" ' +
+      'placeholder="' + escapeHtml(placeholder) + '" spellcheck="false">' +
+      '</div>';
+  }
+
+  const body =
+    field('pwCurrent', '当前密码', '请输入现在使用的密码', 'current-password') +
+    field('pwNew', '新密码', '至少 ' + PASSWORD_MIN_LENGTH + ' 位', 'new-password') +
+    field('pwConfirm', '确认新密码', '再输入一次新密码', 'new-password') +
+    '<div class="dlg-inline-hint" id="pwHint"></div>';
+
+  const promise = openDialog({
+    title: options.title || '修改密码',
+    bodyHtml: body,
+    iconName: options.iconName || 'user',
+    hint: options.hint || '',
+    buttons: [
+      { text: '取消', value: null },
+      { text: '确定修改', value: true, className: 'primary' }
+    ],
+    // 三个框一起取值，交给调用方
+    getValue: function (dialog) {
+      function read(id) {
+        const el = dialog.querySelector('#' + id);
+        return el ? el.value : '';
+      }
+      return { current: read('pwCurrent'), next: read('pwNew') };
+    }
+  });
+
+  // openDialog 是「同步建好 DOM 之后」才返回 promise 的，所以这里能立刻挂上事件
+  const currentEl = document.getElementById('pwCurrent');
+  const newEl = document.getElementById('pwNew');
+  const confirmEl = document.getElementById('pwConfirm');
+  const hintEl = document.getElementById('pwHint');
+  const okBtn = document.querySelector('.dialog-foot .btn.primary');
+
+  function validate() {
+    const current = currentEl ? currentEl.value : '';
+    const next = newEl ? newEl.value : '';
+    const confirm = confirmEl ? confirmEl.value : '';
+
+    let message = '';
+    if (next && next.length < PASSWORD_MIN_LENGTH) {
+      message = '新密码至少需要 ' + PASSWORD_MIN_LENGTH + ' 位';
+    } else if (confirm && next !== confirm) {
+      message = '两次输入的新密码不一致';
+    } else if (next && current && next === current) {
+      message = '新密码不能与当前密码相同';
+    }
+
+    const ready = !!current && !!next && !!confirm && !message;
+    if (hintEl) {
+      hintEl.textContent = message;
+      hintEl.classList.toggle('is-error', !!message);
+    }
+    if (okBtn) {
+      okBtn.disabled = !ready;
+    }
+    return ready;
+  }
+
+  [currentEl, newEl, confirmEl].forEach(function (el) {
+    if (el) {
+      el.addEventListener('input', validate);
+    }
+  });
+  validate();
+
+  if (currentEl) {
+    currentEl.focus();
+  }
+
+  return promise;
 }
 
 /* ---------------------------------------------------------------------------

@@ -19,6 +19,7 @@ import * as ui from './ui.js';
 import { wm, registerWindowOwner } from './wins.js';
 import { openPreview } from './preview.js';
 import { openEditor, canEditText } from './editor.js';
+import { trackJob } from './jobs.js';
 
 /* 已经打开的浏览器窗口：windowId -> ExplorerWindow */
 const openExplorers = new Map();
@@ -316,6 +317,7 @@ export class ExplorerWindow {
 
       '<div class="exp-actions">',
       '  <button type="button" class="act-btn" data-act="newfolder">', icon('folder-plus'), '<span>新建文件夹</span></button>',
+      '  <button type="button" class="act-btn" data-act="newfile">', icon('file-text'), '<span>新建文件</span></button>',
       '  <button type="button" class="act-btn" data-act="upload">', icon('upload'), '<span>上传文件</span></button>',
       '  <button type="button" class="act-btn" data-act="download">', icon('download'), '<span>下载</span></button>',
       '  <span class="act-sep"></span>',
@@ -386,6 +388,7 @@ export class ExplorerWindow {
       btn.addEventListener('click', function () {
         const act = btn.dataset.act;
         if (act === 'newfolder') { self.newFolder(); }
+        else if (act === 'newfile') { self.newFile(); }
         else if (act === 'upload') { self.$fileInput.click(); }
         else if (act === 'download') { self.downloadSelected(); }
         else if (act === 'rename') { self.renameSelected(); }
@@ -965,6 +968,7 @@ export class ExplorerWindow {
 
     const canWrite = isDir && !this.readonly;
     this.el.querySelector('[data-act="newfolder"]').disabled = !canWrite;
+    this.el.querySelector('[data-act="newfile"]').disabled = !canWrite;
     this.el.querySelector('[data-act="upload"]').disabled = !canWrite;
     this.el.querySelector('[data-act="rename"]').disabled = !canWrite || count !== 1;
     this.el.querySelector('[data-act="delete"]').disabled = !canWrite || count === 0;
@@ -1251,6 +1255,144 @@ export class ExplorerWindow {
     this.renderStatus({ total: this.entries.length, dir_count: this.countDirs(), file_count: this.countFiles() });
   }
 
+  /* =========================================================================
+     键盘导航（方向键 / Home / End / PageUp / PageDown / 首字母跳转）
+     ========================================================================= */
+
+  /** 当前「光标」的条目下标：优先 lastClicked，其次唯一的选中项，都没有则 -1 */
+  cursorIndex() {
+    if (this.lastClicked >= 0 && this.lastClicked < this.entries.length) {
+      return this.lastClicked;
+    }
+    if (this.selection.size === 1) {
+      return this.indexOf(this.selection.values().next().value);
+    }
+    return -1;
+  }
+
+  /** 图标视图里一行有几个条目（把「上下」换算成条目步长要用它） */
+  iconColumns() {
+    const items = this.$icons.querySelectorAll('[data-name]');
+    if (items.length < 2) {
+      return 1;
+    }
+    const firstTop = items[0].offsetTop;
+    let columns = 0;
+    for (let i = 0; i < items.length; i++) {
+      if (items[i].offsetTop !== firstTop) {
+        break;      // 换行了，说明一行的个数已经数完
+      }
+      columns++;
+    }
+    return Math.max(1, columns);
+  }
+
+  /** 一屏大约能显示多少个条目（PageUp / PageDown 用） */
+  pageStep() {
+    const container = this.view === 'icons' ? this.$icons : this.$list;
+    const first = container.querySelector('[data-name]');
+    const itemHeight = first ? first.getBoundingClientRect().height : 0;
+    const viewHeight = container.clientHeight || 0;
+
+    const rows = (itemHeight > 0 && viewHeight > 0)
+      ? Math.max(1, Math.floor(viewHeight / itemHeight))
+      : 10;
+    return this.view === 'icons' ? rows * this.iconColumns() : rows;
+  }
+
+  /** 把某个条目滚进可视区 —— 方向键移动后必须跟上，否则选中项会在视野之外 */
+  scrollEntryIntoView(name) {
+    const container = this.view === 'icons' ? this.$icons : this.$list;
+    const cell = container.querySelector('[data-name="' + cssEscape(name) + '"]');
+    if (cell && cell.scrollIntoView) {
+      cell.scrollIntoView({ block: 'nearest' });
+    }
+  }
+
+  /**
+   * 相对移动选择。
+   * @param {number} step 条目步长（正数向下、负数向上）
+   * @param {boolean} extend 是否按住 Shift 扩展选区
+   */
+  moveSelection(step, extend) {
+    const total = this.entries.length;
+    if (!total) {
+      return;
+    }
+
+    const current = this.cursorIndex();
+    if (current < 0) {
+      // 还没有光标：向下从第一项开始、向上从最后一项开始（与 Windows 一致）
+      this.moveSelectionTo(step > 0 ? 0 : total - 1, extend);
+      return;
+    }
+    this.moveSelectionTo(current + step, extend);
+  }
+
+  /** 把选择移到指定下标（Home / End / 方向键最终都汇到这里） */
+  moveSelectionTo(index, extend) {
+    const total = this.entries.length;
+    if (!total) {
+      return;
+    }
+    const target = Math.min(total - 1, Math.max(0, index));
+    const name = this.entries[target].name;
+
+    if (extend) {
+      // Shift+方向键：以原锚点为准扩展范围。锚点不存在时先把当前项立成锚点，
+      // 否则 selectRange 会从第 0 项算起，按一下就顺手选走一大片。
+      if (this.lastClicked < 0) {
+        const current = this.cursorIndex();
+        this.lastClicked = current >= 0 ? current : target;
+      }
+      this.selectRange(name);
+    } else {
+      this.selectOnly(name);
+      this.lastClicked = target;
+    }
+
+    this.scrollEntryIntoView(name);
+  }
+
+  /**
+   * 首字母跳转（type-ahead）。
+   *
+   * 连续敲入的字符拼成一个前缀（与 Windows 资源管理器一致），
+   * 停手超过一小段时间就重新开始。搜索从「当前项的下一个」起绕一圈，
+   * 所以反复按同一个字母能在同首字母的条目之间轮转。
+   *
+   * @returns {boolean} 是否找到目标（没找到就不消费这次按键）
+   */
+  typeAhead(char) {
+    const TYPE_AHEAD_RESET_MS = 800;
+
+    const now = Date.now();
+    if (now - (this.typeAheadAt || 0) > TYPE_AHEAD_RESET_MS) {
+      this.typeAheadText = '';
+    }
+    this.typeAheadAt = now;
+    this.typeAheadText = (this.typeAheadText || '') + String(char).toLowerCase();
+
+    const query = this.typeAheadText;
+    const total = this.entries.length;
+    if (!total || !query) {
+      return false;
+    }
+
+    const start = this.cursorIndex() + 1;
+    for (let offset = 0; offset < total; offset++) {
+      const index = ((start + offset) % total + total) % total;
+      const name = String(this.entries[index].name || '').toLowerCase();
+      if (name.indexOf(query) === 0) {
+        this.selectOnly(this.entries[index].name);
+        this.lastClicked = index;
+        this.scrollEntryIntoView(this.entries[index].name);
+        return true;
+      }
+    }
+    return false;
+  }
+
   syncSelectionClasses() {
     const self = this;
     [this.$icons, this.$list].forEach(function (container) {
@@ -1353,6 +1495,12 @@ export class ExplorerWindow {
       }
     }
 
+    // ---- 方向键 / Home / End / PageUp / PageDown：移动选择 ----
+    // 放在功能键之前判：这几个是最高频的浏览操作，先判掉最省事
+    if (this.handleNavigationKey(e)) {
+      return;
+    }
+
     if (e.key === 'F5') {
       e.preventDefault();
       this.reload(false);
@@ -1379,7 +1527,64 @@ export class ExplorerWindow {
       }
       this.clearSelection();
       ui.hideContextMenu();
+    } else if (!e.ctrlKey && !e.metaKey && !e.altKey && e.key && e.key.length === 1) {
+      // 首字母跳转（type-ahead）。放在整条链的最后：只有前面谁都没认领，
+      // 才把单个可打印字符当成「跳到以它开头的条目」。
+      if (this.typeAhead(e.key)) {
+        e.preventDefault();
+      }
     }
+  }
+
+  /**
+   * 处理方向键 / Home / End / PageUp / PageDown。
+   *
+   * @returns {boolean} 是否消费了这次按键（false 表示交给后面的分支）
+   */
+  handleNavigationKey(e) {
+    const total = this.entries.length;
+    if (!total) {
+      return false;
+    }
+
+    // 图标视图是**二维网格**：上下要按「一行几个」跳，左右才是 ±1。
+    // 列表视图只有一维，左右键不参与选择 —— 与 Windows 资源管理器一致。
+    const isGrid = this.view === 'icons';
+    const step = isGrid ? this.iconColumns() : 1;
+
+    switch (e.key) {
+      case 'ArrowDown':
+        this.moveSelection(step, e.shiftKey);
+        break;
+      case 'ArrowUp':
+        this.moveSelection(-step, e.shiftKey);
+        break;
+      case 'ArrowLeft':
+        if (!isGrid) { return false; }
+        this.moveSelection(-1, e.shiftKey);
+        break;
+      case 'ArrowRight':
+        if (!isGrid) { return false; }
+        this.moveSelection(1, e.shiftKey);
+        break;
+      case 'Home':
+        this.moveSelectionTo(0, e.shiftKey);
+        break;
+      case 'End':
+        this.moveSelectionTo(total - 1, e.shiftKey);
+        break;
+      case 'PageDown':
+        this.moveSelection(this.pageStep(), e.shiftKey);
+        break;
+      case 'PageUp':
+        this.moveSelection(-this.pageStep(), e.shiftKey);
+        break;
+      default:
+        return false;
+    }
+
+    e.preventDefault();
+    return true;
   }
 
   openEntry(entry) {
@@ -1587,6 +1792,11 @@ export class ExplorerWindow {
         onClick: function () { self.newFolder(); }
       },
       {
+        label: '新建文件', iconName: 'file-text',
+        disabled: !canWrite,
+        onClick: function () { self.newFile(); }
+      },
+      {
         label: '上传文件', iconName: 'upload',
         disabled: !canWrite,
         onClick: function () { self.$fileInput.click(); }
@@ -1723,14 +1933,18 @@ export class ExplorerWindow {
       return;
     }
 
-    ui.setBusy(true, isCopy ? '正在复制…' : '正在移动…');
-    const job = isCopy
-      ? api.copyEntries(srcRoot, filtered, this.rootId, target)
-      : api.moveEntries(srcRoot, filtered, this.rootId, target);
+    // 走后台队列：立刻拿到 job_id，进度与取消交给右下角的进度面板。
+    // 之所以不再用整屏遮罩：复制几十 GB 时那层遮罩会把整个桌面锁住，
+    // 用户既看不到进度、也没法继续做别的事 —— 这正是当初最难受的地方。
+    const submit = isCopy
+      ? api.copyEntries(srcRoot, filtered, this.rootId, target, true)
+      : api.moveEntries(srcRoot, filtered, this.rootId, target, true);
 
-    job.then(function (res) {
-      ui.setBusy(false);
-
+    submit.then(function (res) {
+      // 后台模式只返回 {job_id}；trackJob 会把终态结果交回来，形状与原来的
+      // 同步接口完全一致，所以下面这段处理逻辑一个字都不用改。
+      return trackJob(res.job_id);
+    }).then(function (res) {
       if (res.failures && res.failures.length) {
         ui.showAlert(isCopy ? '部分项目复制失败' : '部分项目移动失败',
           res.failures.join('\n'), 'warning');
@@ -1749,9 +1963,14 @@ export class ExplorerWindow {
       }
       return self.reload(true);
     }).catch(function (err) {
-      ui.setBusy(false);
+      if (err && err.cancelled) {
+        // 用户主动取消不是故障，别弹错误框吓人
+        ui.toast(isCopy ? '已取消复制' : '已取消移动', 'info');
+        return self.reload(true);
+      }
       if (err && err.status !== 401) {
-        ui.showAlert(isCopy ? '复制失败' : '移动失败', err.message, 'error');
+        ui.showAlert(isCopy ? '复制失败' : '移动失败',
+          (err && err.message) || '未知错误', 'error');
       }
     });
   }
@@ -1877,6 +2096,49 @@ export class ExplorerWindow {
       }).then(function () {
         // 新建后自动进入重命名状态，和资源管理器一致
         self.startInlineRename(trimmed);
+      }).catch(function (err) {
+        if (err && err.status !== 401) {
+          ui.showAlert('新建失败', err.message, 'error');
+        }
+      });
+    });
+  }
+
+  /**
+   * 新建空文件。
+   *
+   * 与「新建文件夹」的两点不同：
+   *   1. 文件名带扩展名，且**扩展名由用户自己决定** —— 对话框里的「常用类型」
+   *      下拉只是快捷补全，照样可以直接敲列表里没有的后缀（例如 .tsv）；
+   *   2. 创建后**不**进入就地重命名（名字刚在对话框里确认过），改为选中新条目，
+   *      方便紧接着双击打开编辑。
+   */
+  newFile() {
+    const self = this;
+    if (this.mode !== 'dir' || this.readonly) {
+      return;
+    }
+
+    ui.showFileNameDialog({
+      title: '新建文件',
+      label: '请输入文件名（含扩展名）：',
+      defaultName: '新建文本文档.txt'
+    }).then(function (name) {
+      if (name === null) {
+        return;
+      }
+      const trimmed = String(name).trim();
+      if (!trimmed) {
+        ui.toast('文件名不能为空', 'warn');
+        return;
+      }
+
+      api.newFile(self.rootId, self.relPath, trimmed).then(function (res) {
+        ui.toast(res.message || '文件已创建', 'success');
+        return self.reload(true).then(function () {
+          // 用服务端回传的真实名字选中，避免前后端对文件名的处理不一致
+          self.selectOnly(res.name || trimmed);
+        });
       }).catch(function (err) {
         if (err && err.status !== 401) {
           ui.showAlert('新建失败', err.message, 'error');
@@ -2177,16 +2439,19 @@ export class ExplorerWindow {
     const self = this;
     const rel = entry.rel || (this.relPath ? this.relPath + '/' + entry.name : entry.name);
 
-    ui.setBusy(true, '正在解压…');
+    // 同样走后台队列：解压一个大包可能要好几分钟，用整屏遮罩锁住界面
+    // 是没法接受的（而且重名冲突是在提交那一刻就报回来的，不受影响）。
     api.extractArchive({
       root: this.rootId,
       path: rel,
       target_root: targetRoot,
       target_path: targetPath,
       // 覆盖一批文件几乎没法回退，前端保持「不覆盖」这个默认，让用户换个目录重来
-      overwrite: false
+      overwrite: false,
+      background: true
     }).then(function (res) {
-      ui.setBusy(false);
+      return trackJob(res.job_id);
+    }).then(function (res) {
       ui.toast((res.target ? res.target + '：' : '') + '已解压 ' + res.extracted +
         ' 项（' + res.size_text + '）', 'success', '解压完成');
       if (res.skipped && res.skipped.length) {
@@ -2195,7 +2460,10 @@ export class ExplorerWindow {
       }
       return self.reload(true);
     }).catch(function (err) {
-      ui.setBusy(false);
+      if (err && err.cancelled) {
+        ui.toast('已取消解压', 'info');
+        return self.reload(true);
+      }
       if (!err || err.status === 401) {
         return;
       }
@@ -2203,7 +2471,7 @@ export class ExplorerWindow {
         self.offerExtractToNewFolder(entry, err.message, targetPath);
         return;
       }
-      ui.showAlert('解压失败', err.message, 'error');
+      ui.showAlert('解压失败', (err && err.message) || '未知错误', 'error');
     });
   }
 

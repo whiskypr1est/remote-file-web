@@ -50,6 +50,7 @@ import zipfile
 from typing import Any, Dict, List, Optional, Tuple
 
 from .security import PathSecurityError, is_within
+from .fsops import OperationCancelled
 
 # ---------------------------------------------------------------------------
 # 常量
@@ -325,7 +326,16 @@ def list_entries(archive_path: str, fmt: str,
     entries: List[Dict[str, Any]] = []
 
     if fmt == "zip":
-        with zipfile.ZipFile(archive_path) as zf:
+        try:
+            handle = zipfile.ZipFile(archive_path)
+        except zipfile.BadZipFile:
+            # 不转成 ArchiveError 的话，BadZipFile 会一路冒到路由层变成 500，
+            # 用户只看到「内部服务器错误」；而真实原因（这文件根本不是 zip）
+            # 其实很容易说清楚 —— 「浏览压缩包」这种只读操作尤其不该 500。
+            raise ArchiveError(
+                "这不是有效的 ZIP 文件：可能已损坏、下载不完整，"
+                "或者后缀与实际格式不符。")
+        with handle as zf:
             infos = zf.infolist()
             # 加密包的内容根本读不出来。不提前拦的话，底层会抛
             # RuntimeError（"File ... is encrypted"）冒到路由层变成 500，
@@ -507,6 +517,20 @@ def _check_conflicts(dest_root: str, entries: List[Dict[str, Any]]) -> List[str]
     return conflicts
 
 
+def top_level_conflicts(entries: List[Dict[str, Any]], dest_root: str) -> List[str]:
+    """
+    条目里的顶层名字与目标目录中已有项的重名列表。
+
+    抽成公开函数，是为了让「只浏览、不解压」的接口也能复用同一套判断：
+    解压遇到同名顶层项是**整体中止**的（见 extract），如果浏览时就能提前
+    看到冲突，用户不必点完才发现被拒。判断逻辑只有这一份，两边不会走偏。
+    """
+    if not os.path.isdir(dest_root):
+        return []
+    return [name for name in _top_names(entries)
+            if os.path.exists(os.path.join(dest_root, name))]
+
+
 def inspect(archive_path: str, dest_root: str, *, fmt: str = "",
             max_entries: int = DEFAULT_MAX_ENTRIES,
             max_total_mb: int = DEFAULT_MAX_TOTAL_MB,
@@ -525,10 +549,7 @@ def inspect(archive_path: str, dest_root: str, *, fmt: str = "",
     entries = list_entries(archive_path, fmt, max_entries=max_entries)
     total_bytes = _check_limits(entries, max_total_mb, max_single_mb)
 
-    conflicts: List[str] = []
-    if os.path.isdir(dest_root):
-        conflicts = [name for name in _top_names(entries)
-                     if os.path.exists(os.path.join(dest_root, name))]
+    conflicts = top_level_conflicts(entries, dest_root)
 
     return {
         "format": fmt,
@@ -599,11 +620,22 @@ def extract(archive_path: str, dest_root: str, *, fmt: str = "",
             max_entries: int = DEFAULT_MAX_ENTRIES,
             max_total_mb: int = DEFAULT_MAX_TOTAL_MB,
             max_single_mb: int = DEFAULT_MAX_SINGLE_MB,
-            overwrite: bool = False) -> Dict[str, Any]:
+            overwrite: bool = False,
+            progress=None, should_cancel=None) -> Dict[str, Any]:
     """
     把压缩包解压到 dest_root。返回统计信息。
 
     overwrite=False（默认）时遇重名直接拒绝，绝不覆盖已有文件。
+
+    progress / should_cancel 是给「后台任务」用的可选回调：:
+
+        progress(items_delta, bytes_delta, name)
+        should_cancel() -> bool
+
+    ★ 精度不一致是**已知且有意的**：zip / tar 能在 Python 里逐条目写，
+      所以能报细粒度进度；而 7z / rar 走的是外部库的 extractall，
+      中间过程观察不到，只能报「开始 / 结束」两档。与其编一个假进度，
+      不如让前端如实显示 —— 否则用户会以为卡死了。
     """
     fmt = fmt or detect_format(archive_path)
     if not fmt:
@@ -620,10 +652,13 @@ def extract(archive_path: str, dest_root: str, *, fmt: str = "",
     skipped: List[str] = []
 
     if fmt in ("zip", "tar"):
-        # 这两种能在 Python 里逐条目写，直接落盘，不需要暂存目录
+        # 这两种能在 Python 里逐条目写，直接落盘，不需要暂存目录，
+        # 也因此能逐条目报进度、逐条目响应取消。
         if fmt == "zip":
             with zipfile.ZipFile(archive_path) as zf:
                 for info in zf.infolist():
+                    if should_cancel is not None and should_cancel():
+                        raise OperationCancelled("解压已取消")
                     name = fix_zip_filename(info)
                     parts = _check_member_name(name)
                     if parts is None:
@@ -639,6 +674,8 @@ def extract(archive_path: str, dest_root: str, *, fmt: str = "",
                     with zf.open(info) as src, open(target, "wb") as dst:
                         shutil.copyfileobj(src, dst, 1024 * 1024)
                     extracted += 1
+                    if progress is not None:
+                        progress(1, int(info.file_size), name)
         else:
             # 单文件压缩流（app.log.gz）：走流式解压，别用 tarfile
             single = entries[0].get("_single_stream") if entries else ""
@@ -647,6 +684,8 @@ def extract(archive_path: str, dest_root: str, *, fmt: str = "",
                                               entries[0]["name"], max_single_mb)
             with tarfile.open(archive_path, "r:*") as tf:
                 for member in tf.getmembers():
+                    if should_cancel is not None and should_cancel():
+                        raise OperationCancelled("解压已取消")
                     parts = _check_member_name(member.name)
                     if parts is None:
                         continue
@@ -669,6 +708,8 @@ def extract(archive_path: str, dest_root: str, *, fmt: str = "",
                     with src, open(target, "wb") as dst:
                         shutil.copyfileobj(src, dst, 1024 * 1024)
                     extracted += 1
+                    if progress is not None:
+                        progress(1, int(member.size or 0), member.name)
     else:
         # 7z / rar：先解到暂存目录，再按校验过的名字搬过去。
         # 这样即使外部工具（或多版本 py7zr）自己不防穿越，也越不出暂存目录。

@@ -108,6 +108,17 @@
     "rar_path": "",
     "unrar_path": ""
   },
+  "sysmon": {
+    "enabled": true,
+    "top_n": 30,
+    "refresh_seconds": 2,
+    "min_interval_seconds": 0.5
+  },
+  "search": {
+    "max_results": 100,
+    "max_scanned": 200000,
+    "timeout_seconds": 8
+  },
   "preview": {
     "text_max_kb": 2048
   },
@@ -127,6 +138,8 @@
     "archive.max_entries / max_total_mb / max_single_mb 是解压时的上限（条目数、解压后总体积、单个文件），同时也是「解压炸弹」的防线，不建议调得过大。",
     "解压 RAR 需要 WinRAR 的 UnRAR.exe、创建 RAR 需要 Rar.exe；留空会自动探测 C:\\Program Files\\WinRAR\\，装在别处就填 archive.rar_path / archive.unrar_path。7z 走 py7zr，不需要外部程序。",
     "user_state_path 是「关闭页面再打开还是之前的界面」所依赖的状态文件（窗口布局、所在目录、视图模式）；默认与 desktop_shortcuts.json 同级，删掉它即可恢复默认布局。支持相对路径（相对**本文件所在目录**解析）；因此用别的配置文件起多实例时，状态各存各的、不会互相覆盖真实部署的那一份。",
-    "terminal.evict_grace_seconds：会话上限满了之后，一个「没有客户端连着且已闲置这么久」的旧会话可以被新会话顶掉，而不是直接报「会话数已达上限」。因为关掉浏览器不再结束会话，分离的会话仍占名额，这个值就是留给它的出路。"
+    "terminal.evict_grace_seconds：会话上限满了之后，一个「没有客户端连着且已闲置这么久」的旧会话可以被新会话顶掉，而不是直接报「会话数已达上限」。因为关掉浏览器不再结束会话，分离的会话仍占名额，这个值就是留给它的出路。",
+    "sysmon 是虚拟桌面里的「任务管理器」窗口：只读监控，**不提供**「结束进程」。它会让任何能登录的人看到服务器上正在跑哪些程序、以及各自属于哪个用户，不需要这个信息面就把 enabled 改成 false。GPU 利用率目前只支持 NVIDIA 显卡（读 nvidia-smi 命令行），其它显卡会如实显示「不可用」，而不是编一个 0% 出来。",
+    "新建文件（资源管理器右键「新建文件」，或工具栏按钮）与上传共用 upload.blocked_extensions 黑名单，所以默认不能新建 .bat / .ps1 这类可执行文件；确实需要就把对应扩展名从那个列表里删掉。"
   ]
 }

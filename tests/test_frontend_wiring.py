@@ -140,6 +140,41 @@ class FrontendCrossModuleCallTests(unittest.TestCase):
                         offenders.append("%s:%d ui.%s" % (name, lineno, used))
         self.assertEqual(offenders, [], "调用了 ui.js 未导出的名字：\n  " + "\n  ".join(offenders))
 
+    def test_named_imports_resolve_to_real_exports(self):
+        """
+        `import { foo } from './x.js'` 里的 foo 必须是 x.js 真的导出的名字。
+
+        这一条补的是上面三条的空档：它们只查 `api.xxx` / `ui.xxx` / `wm.xxx`
+        这种「命名空间成员访问」，而**具名导入**写错时是**模块链接阶段**就失败 ——
+        整个页面的模块图都建不起来，用户看到的是一片白屏、控制台只有一行
+        "does not provide an export named"。比运行到那一行才炸更难查，
+        所以值得在静态闸门里挡掉。
+
+        用原始行（raw）而不是抹掉字符串后的文本匹配：这里**需要**那个模块
+        路径字面量，而 _code_lines 会把字符串抹成空引号。
+        局限：只认单行写法（本项目的 import 都是单行的）。
+        """
+        offenders = []
+        for name in _js_files():
+            for lineno, raw, code in _code_lines(_read(name)):
+                match = re.search(
+                    r"""import\s*\{([^}]*)\}\s*from\s*['"](\./[^'"]+)['"]""", raw)
+                if not match:
+                    continue
+                target = os.path.basename(match.group(2))
+                exports = _module_exports(target)
+                for piece in match.group(1).split(","):
+                    piece = piece.strip()
+                    if not piece:
+                        continue
+                    # 支持 `foo as bar`：真正要校验的是被导入的那个原名
+                    original = piece.split(" as ")[0].strip()
+                    if original and original not in exports:
+                        offenders.append("%s:%d 从 %s 导入了不存在的 `%s`"
+                                         % (name, lineno, target, original))
+        self.assertEqual(offenders, [],
+                         "具名导入指向了模块没有导出的名字：\n  " + "\n  ".join(offenders))
+
     def test_relative_imports_resolve_to_real_files(self):
         """相对 import 指向的文件必须存在（改名/挪文件时最容易漏）。"""
         missing = []

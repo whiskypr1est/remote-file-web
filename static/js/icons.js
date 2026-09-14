@@ -172,6 +172,12 @@ const PATHS = {
   'empty-folder':
     '<path d="M2.5 6.2A2.2 2.2 0 0 1 4.7 4h3.9a2 2 0 0 1 1.6.8l1.2 1.6h7.9a2.2 2.2 0 0 1 2.2 2.2v9.2a2.2 2.2 0 0 1-2.2 2.2H4.7a2.2 2.2 0 0 1-2.2-2.2z"/>',
 
+  /* 任务管理器：一条心跳折线，表示「实时负载」 */
+  activity:
+    '<path d="M3 13h4l2.5-6.5L12 18.5l2.5-8 2 2.5H21" fill="none" ' +
+    'stroke="currentColor" stroke-width="2.1" stroke-linecap="round" ' +
+    'stroke-linejoin="round"/>',
+
   /* 快捷方式角标：白色圆角方块 + 蓝色箭头，与 Windows 的快捷方式小箭头一致 */
   shortcut:
     '<rect x="1.4" y="10.4" width="12.2" height="12.2" rx="2.6" fill="#ffffff" ' +

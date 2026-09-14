@@ -1,0 +1,318 @@
+/* ==========================================================================
+   任务管理器窗口
+   --------------------------------------------------------------------------
+   视觉上向 Windows 10 任务管理器靠：上半部分是几张「性能」卡片
+   （CPU / 内存 / 网络 / GPU），下半部分是可排序的进程表。
+
+   配色沿用项目其它窗口的浅色体系（对话框是 #2b3038 文字 / #fafbfc 底），
+   强调色用全局的 --accent，取不到时退回同色值，避免这里成为唯一的例外。
+   ========================================================================== */
+
+.taskmgr-win .wb-body {
+  overflow: hidden;
+}
+
+.tm-root {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  font-size: 12px;
+  color: #2b3038;
+  background: #fff;
+}
+
+/* ---- 工具栏 ---- */
+
+.tm-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid #e6e8ec;
+  background: #fafbfc;
+  flex: 0 0 auto;
+}
+
+.tm-toolbar .tm-spacer {
+  flex: 1;
+}
+
+.tm-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 26px;
+  padding: 0 10px;
+  font-size: 12px;
+  font-family: inherit;
+  color: #2b3038;
+  background: #fff;
+  border: 1px solid #c6ccd4;
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.tm-btn:hover {
+  background: #f0f4f9;
+  border-color: var(--accent, #0a6ad6);
+}
+
+.tm-btn:disabled {
+  opacity: .5;
+  cursor: default;
+}
+
+.tm-btn svg {
+  width: 14px;
+  height: 14px;
+}
+
+.tm-select {
+  height: 26px;
+  font-size: 12px;
+  font-family: inherit;
+  border: 1px solid #c6ccd4;
+  border-radius: 3px;
+  background: #fff;
+  cursor: pointer;
+}
+
+.tm-status {
+  color: var(--text-weak, #6b7280);
+  font-size: 11px;
+}
+
+/* ---- 性能卡片 ---- */
+
+.tm-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(178px, 1fr));
+  gap: 8px;
+  padding: 10px;
+  border-bottom: 1px solid #e6e8ec;
+  flex: 0 0 auto;
+  max-height: 46%;
+  overflow-y: auto;
+}
+
+.tm-card {
+  border: 1px solid #e6e8ec;
+  border-radius: 4px;
+  padding: 8px 9px;
+  background: #fcfdfe;
+  min-width: 0;
+}
+
+.tm-card-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--text-weak, #6b7280);
+}
+
+.tm-card-name {
+  font-weight: 600;
+  color: #2b3038;
+  letter-spacing: .3px;
+}
+
+.tm-card-value {
+  font-size: 19px;
+  font-weight: 300;
+  margin: 3px 0 5px;
+  color: #14456f;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tm-card-value small {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--text-weak, #6b7280);
+}
+
+.tm-bar {
+  height: 7px;
+  border-radius: 4px;
+  background: #e9edf2;
+  overflow: hidden;
+}
+
+.tm-bar-fill {
+  height: 100%;
+  width: 0;
+  border-radius: 4px;
+  background: var(--accent, #0a6ad6);
+  transition: width .25s ease;
+}
+
+/* 高负载变暖色，和真实任务管理器一样用颜色提示压力 */
+.tm-bar-fill.warn { background: #e8a33d; }
+.tm-bar-fill.hot { background: #d9534f; }
+
+.tm-sub {
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--text-weak, #6b7280);
+  line-height: 1.5;
+  word-break: break-word;
+}
+
+/* 每个逻辑核一根细条 */
+.tm-cores {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  margin-top: 7px;
+}
+
+.tm-core {
+  width: 11px;
+  height: 15px;
+  background: #e9edf2;
+  border-radius: 2px;
+  position: relative;
+  overflow: hidden;
+}
+
+.tm-core i {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  width: 100%;
+  height: 0;
+  background: var(--accent, #0a6ad6);
+  transition: height .25s ease;
+}
+
+/* 卡片里的「不可用」说明（例如没有 NVIDIA 显卡时） */
+.tm-note {
+  font-size: 11px;
+  color: #8a6d3b;
+  background: #fdf7e3;
+  border: 1px solid #f0e0b0;
+  border-radius: 3px;
+  padding: 5px 6px;
+  line-height: 1.5;
+}
+
+/* ---- 进程表 ---- */
+
+.tm-proc {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.tm-proc-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px 5px;
+  font-size: 11px;
+  color: var(--text-weak, #6b7280);
+}
+
+.tm-table-wrap {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+}
+
+.tm-table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+
+.tm-table th,
+.tm-table td {
+  padding: 4px 8px;
+  text-align: left;
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  border-bottom: 1px solid #f0f2f5;
+}
+
+.tm-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: #f5f7fa;
+  border-bottom: 1px solid #e0e4ea;
+  font-weight: 600;
+  font-size: 11px;
+  color: #46505c;
+  user-select: none;
+  cursor: pointer;
+}
+
+.tm-table th.no-sort {
+  cursor: default;
+}
+
+.tm-table th .tm-sort {
+  color: var(--accent, #0a6ad6);
+  margin-left: 3px;
+}
+
+.tm-table tbody tr:hover {
+  background: #eef5fd;
+}
+
+.tm-table td.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.tm-table td.name {
+  font-weight: 500;
+}
+
+/* 自己（服务进程）单独标一下，便于一眼找到 */
+.tm-table tr.is-self td.name::after {
+  content: '（本服务）';
+  color: var(--accent, #0a6ad6);
+  font-weight: 400;
+  font-size: 11px;
+}
+
+.tm-cell-bar {
+  display: inline-block;
+  height: 6px;
+  border-radius: 3px;
+  background: #dfe6ee;
+  vertical-align: middle;
+  margin-right: 5px;
+}
+
+.tm-cell-bar i {
+  display: block;
+  height: 100%;
+  border-radius: 3px;
+  background: var(--accent, #0a6ad6);
+}
+
+/* ---- 空态 / 错误态 ---- */
+
+.tm-empty {
+  padding: 22px 16px;
+  text-align: center;
+  color: var(--text-weak, #6b7280);
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+.tm-empty code {
+  background: #f0f2f5;
+  border-radius: 3px;
+  padding: 1px 4px;
+  font-size: 11px;
+}

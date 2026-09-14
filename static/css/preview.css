@@ -545,6 +545,96 @@
    压缩包信息视图
    ========================================================================== */
 
+/* ---- 压缩包内容目录表（浏览，但不解压） ---- */
+
+.arc-body {
+  background: #fff;
+  overflow: auto;
+}
+
+.arc-table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+  font-size: 12px;
+}
+
+.arc-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  text-align: left;
+  font-weight: 600;
+  font-size: 11px;
+  color: #46505c;
+  background: #f5f7fa;
+  border-bottom: 1px solid #e0e4ea;
+  padding: 5px 10px;
+}
+
+.arc-table th.num {
+  text-align: right;
+  width: 110px;
+}
+
+.arc-table th:last-child {
+  width: 150px;
+}
+
+.arc-table td {
+  padding: 4px 10px;
+  border-bottom: 1px solid #f0f2f5;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: middle;
+}
+
+.arc-table td.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-weak);
+}
+
+.arc-table tbody tr:hover {
+  background: #eef5fd;
+}
+
+/* 链接类条目解压时会被跳过，灰掉以免用户以为它会落盘 */
+.arc-table tr.is-link td {
+  color: var(--text-weak);
+}
+
+.arc-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.arc-ico {
+  width: 15px;
+  height: 15px;
+  flex: 0 0 auto;
+}
+
+.arc-empty {
+  padding: 18px 14px;
+  color: var(--text-weak);
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+.arc-warn {
+  margin: 10px;
+  padding: 8px 10px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: #8a6d3b;
+  background: #fdf7e3;
+  border: 1px solid #f0e0b0;
+  border-radius: 3px;
+}
+
 .archive-view {
   padding: 26px;
   display: flex;

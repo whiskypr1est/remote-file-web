@@ -6,6 +6,7 @@
     GET  /api/fs/roots          —— 根目录列表（「此电脑」视图）
     GET  /api/fs/list           —— 列目录
     POST /api/fs/mkdir          —— 新建文件夹
+    POST /api/fs/newfile        —— 新建空文件（扩展名由用户自己决定）
     POST /api/fs/rename         —— 重命名
     POST /api/fs/delete         —— 删除（回收站 / 永久）
     POST /api/fs/copy           —— 复制（重名自动改名，绝不覆盖）
@@ -43,10 +44,10 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
-from .. import archive, fsops
+from .. import archive, fsops, jobs
 from ..deps import get_state
 from ..http_utils import file_response
-from ..security import PathSecurityError, is_protected, is_within
+from ..security import PathSecurityError, is_blocked_extension, is_protected, is_within
 
 router = APIRouter(prefix="/api/fs", tags=["文件"])
 
@@ -165,6 +166,13 @@ class MkdirPayload(BaseModel):
     name: str
 
 
+class NewFilePayload(BaseModel):
+    """新建空文件。name 是含扩展名的完整文件名，后缀由前端让用户自己选或填。"""
+    root: str = ""
+    path: str = ""
+    name: str
+
+
 class RenamePayload(BaseModel):
     root: str = ""
     path: str = ""
@@ -185,6 +193,10 @@ class TransferPayload(BaseModel):
     # 目标根与源根可以不同，跨盘复制/移动就靠这两个字段
     target_root: str = ""
     target_path: str = ""
+    # ★ 后台执行：立刻返回 job_id，前端轮询 /api/jobs/{id} 看进度。
+    #   默认 false 保持原契约（请求挂到做完为止）—— 命令行/脚本仍然可以
+    #   用「同步」这一档，不必自己写轮询。
+    background: bool = False
 
 
 class ZipPayload(BaseModel):
@@ -208,6 +220,66 @@ async def list_roots(request: Request) -> Dict[str, Any]:
         roots.append(payload)
 
     return {"ok": True, "roots": roots}
+
+
+@router.get("/search")
+async def search_files(request: Request, q: str = "", root: str = "",
+                       limit: int = 0) -> Dict[str, Any]:
+    """
+    按文件名搜索（递归，**不搜内容**）。
+
+    root 留空 = 在所有可访问根目录里搜；开了 mount_all_drives 之后那就是
+    「全盘搜索」。所以下面几道刹车不是可选项 —— 结果数、扫描条目数、时间预算，
+    任一触发都会**带着已有结果**返回并把 truncated 置真，而不是把请求挂死。
+    """
+    state = get_state(request)
+    query = (q or "").strip()
+    if len(query) < 2:
+        raise HTTPException(status_code=400, detail="请至少输入 2 个字符再搜索")
+
+    settings = state.cfg.get("search") or {}
+
+    def _int_setting(key: str, fallback: int) -> int:
+        try:
+            return int(settings.get(key) or fallback)
+        except (TypeError, ValueError):
+            return fallback
+
+    def _float_setting(key: str, fallback: float) -> float:
+        try:
+            return float(settings.get(key) or fallback)
+        except (TypeError, ValueError):
+            return fallback
+
+    if root:
+        try:
+            root_cfg, _abs = _resolve(state.resolver, root, "")
+        except Exception as exc:  # noqa: BLE001
+            raise _translate_error(exc)
+        targets = [root_cfg]
+    else:
+        targets = list(state.resolver.roots)
+
+    wanted = int(limit) if limit and limit > 0 else _int_setting(
+        "max_results", fsops.DEFAULT_SEARCH_RESULTS)
+    wanted = max(1, min(wanted, 500))
+
+    result = await run_in_threadpool(
+        fsops.search_files, targets, query,
+        max_results=wanted,
+        max_scanned=_int_setting("max_scanned", fsops.DEFAULT_SEARCH_SCANNED),
+        time_budget=_float_setting("timeout_seconds", fsops.DEFAULT_SEARCH_SECONDS),
+    )
+
+    return {
+        "ok": True,
+        "query": query,
+        "results": result["results"],
+        "count": len(result["results"]),
+        "scanned": result["scanned"],
+        "truncated": result["truncated"],
+        "reason": result["reason"],
+    }
 
 
 @router.get("/list")
@@ -352,6 +424,44 @@ async def make_directory(request: Request, payload: MkdirPayload) -> Dict[str, A
     return {"ok": True, "message": "文件夹已创建", "rel": rel, "name": os.path.basename(new_path)}
 
 
+@router.post("/newfile")
+async def make_file(request: Request, payload: NewFilePayload) -> Dict[str, Any]:
+    """
+    新建空文件，扩展名由前端让用户自己选或直接输入。
+
+    校验与「新建文件夹」一致（只读根目录 / 目标必须是目录 / 受保护路径），
+    另外多一道**扩展名黑名单**，这是有意为之：
+        新建文件等于在服务器上凭空造出一个文件，如果不受与上传相同的限制，
+        「上传 .bat 被拦、但先新建一个空 .bat 再往里写内容」就绕过了黑名单。
+        名单与上传共用 upload.blocked_extensions，放行方式也一致。
+    """
+    state = get_state(request)
+
+    try:
+        root_cfg, abs_path = _resolve(state.resolver, payload.root, payload.path)
+        _ensure_writable(root_cfg)
+
+        if not os.path.isdir(abs_path):
+            raise HTTPException(status_code=400, detail="目标位置不是有效目录")
+
+        _ensure_not_protected(state.cfg, abs_path)
+
+        blocked = (state.cfg.get("upload") or {}).get("blocked_extensions") or []
+        hit = is_blocked_extension(payload.name, blocked)
+        if hit:
+            raise PathSecurityError(
+                "出于安全考虑，禁止新建 %s 类型的可执行文件。"
+                "如需放行，请修改 config.json 中 upload.blocked_extensions。" % hit
+            )
+
+        new_path = await run_in_threadpool(fsops.create_file, abs_path, payload.name)
+    except Exception as exc:  # noqa: BLE001
+        raise _translate_error(exc)
+
+    rel = state.resolver.to_rel(root_cfg, new_path)
+    return {"ok": True, "message": "文件已创建", "rel": rel, "name": os.path.basename(new_path)}
+
+
 @router.post("/rename")
 async def rename_entry(request: Request, payload: RenamePayload) -> Dict[str, Any]:
     """重命名文件或文件夹。"""
@@ -469,7 +579,7 @@ def _is_reparse_point(path: str) -> bool:
 
 
 def _copy_tree(src_dir: str, dst_dir: str, skipped: List[str], failures: List[str],
-               label: str = "") -> None:
+               label: str = "", progress=None, should_cancel=None) -> None:
     """
     递归复制目录。
 
@@ -478,6 +588,9 @@ def _copy_tree(src_dir: str, dst_dir: str, skipped: List[str], failures: List[st
     就会无限递归、把磁盘写满。改成自己遍历，遇到重解析点整条跳过并如实上报，
     宁可少复制一点也不能把服务拖死。
     单个文件出错只记进 failures，不影响同目录里的其它文件。
+
+    progress / should_cancel 会一路透传给底层的分块复制，让「一个几十 GB 的
+    文件」也能报进度、也能被取消。
     """
     os.makedirs(dst_dir, exist_ok=True)
 
@@ -496,9 +609,14 @@ def _copy_tree(src_dir: str, dst_dir: str, skipped: List[str], failures: List[st
                 skipped.append("%s（符号链接/目录联接，已跳过）" % rel_label)
                 continue
             if entry.is_dir(follow_symlinks=False):
-                _copy_tree(source, target, skipped, failures, rel_label)
+                _copy_tree(source, target, skipped, failures, rel_label,
+                           progress, should_cancel)
             else:
-                shutil.copy2(source, target)
+                fsops.copy_file_tracked(source, target, progress, should_cancel)
+        except fsops.OperationCancelled:
+            # 取消要一路冒到任务层，不能被下面那个「单项失败不影响整批」的
+            # except Exception 吞掉 —— 否则点了取消、任务却继续跑完。
+            raise
         except Exception as exc:  # noqa: BLE001 - 单个文件失败不能中断整棵树
             failures.append("%s：%s" % (rel_label, exc))
 
@@ -580,9 +698,14 @@ async def _transfer_entries(request: Request, payload: TransferPayload, move: bo
     skipped: List[str] = []
     failures: List[str] = []
 
-    def _transfer_one(src_abs: str) -> None:
+    def _transfer_one(src_abs: str, progress=None, should_cancel=None) -> None:
         """处理一项；异常只转成 failures 里的一条记录，不影响同批其它项。"""
         name = os.path.basename(src_abs) or src_abs
+
+        def on_bytes(count: int) -> None:
+            if progress is not None:
+                progress(count, name)
+
         try:
             # 源与目标目录相同：移动没有意义，直接跳过并如实上报
             if move and _same_dir(os.path.dirname(src_abs), dst_dir):
@@ -597,62 +720,109 @@ async def _transfer_entries(request: Request, payload: TransferPayload, move: bo
             target = fsops.unique_path(dst_dir, name)
 
             if move:
+                # 体积必须在移动**之前**量：移动完成后源就没了，
+                # 那时再量只会得到 0，进度也就永远停在 0%。
+                size = _sources_total_size([src_abs], 1 << 50)
                 # shutil.move 跨卷时会自动退化成「复制 + 删除源」
                 shutil.move(src_abs, target)
                 moved.append(name)
+                if progress is not None:
+                    progress(size, name)
             elif os.path.isdir(src_abs):
-                _copy_tree(src_abs, target, skipped, failures, name)
+                _copy_tree(src_abs, target, skipped, failures, name,
+                           on_bytes, should_cancel)
                 copied.append(name)
             else:
-                shutil.copy2(src_abs, target)
+                fsops.copy_file_tracked(src_abs, target, on_bytes, should_cancel)
                 copied.append(name)
 
             final_name = os.path.basename(target)
             if final_name != name:
                 # 目标已有同名项，系统自动改了名，必须告诉前端
                 renamed.append({"from": name, "to": final_name})
+        except fsops.OperationCancelled:
+            # 取消不能被下面那个「单项失败不影响整批」的分支吞掉，
+            # 否则点了取消、任务还会一路跑完，取消就成了摆设。
+            raise
         except Exception as exc:  # noqa: BLE001
             failures.append("%s：%s" % (name, exc))
 
-    def _transfer_batch() -> None:
+    def _transfer_batch(progress=None, should_cancel=None,
+                        on_item=None) -> Dict[str, Any]:
+        """
+        跑完整批并组装结果。
+
+        同步接口与后台任务**共用这一份实现**，只是回调不同：
+        同步时回调是 None（维持原来的行为），后台时接到 Job 上。
+        """
         for src_path in sources:
-            _transfer_one(src_path)
+            if should_cancel is not None and should_cancel():
+                raise fsops.OperationCancelled("%s已取消" % action)
+            _transfer_one(src_path, progress, should_cancel)
+            if on_item is not None:
+                on_item(os.path.basename(src_path) or src_path)
+        return _transfer_result()
+
+    def _transfer_result() -> Dict[str, Any]:
+        done_count = len(copied) + len(moved)
+
+        if failures and done_count == 0:
+            # 一项都没成功，把原因直接抛给前端显示（与删除接口一致）
+            raise HTTPException(status_code=500,
+                                detail="%s失败：%s" % (action, "；".join(failures)))
+
+        if done_count:
+            summary = "已%s %d 项" % (action, done_count)
+            if renamed:
+                summary += "，%d 项因重名自动改名" % len(renamed)
+            if skipped:
+                summary += "，%d 项已跳过" % len(skipped)
+            if failures:
+                summary += "，%d 项失败" % len(failures)
+        elif skipped:
+            summary = "没有需要%s的项目" % action
+        else:
+            summary = "没有执行任何%s操作" % action
+
+        return {
+            "ok": True,
+            "message": summary,
+            # copied/moved 里是「源名字」，renamed 里给出改名前后的名字
+            "copied": copied,
+            "moved": moved,
+            "renamed": renamed,
+            "skipped": skipped,
+            "failures": failures,
+        }
+
+    # ---- 后台模式：校验已经在上面同步做完了，搬字节的活儿丢给任务队列 ----
+    if payload.background:
+        def work(job) -> Dict[str, Any]:
+            try:
+                job.set_totals(items=len(sources),
+                               total_bytes=_sources_total_size(sources, 1 << 50))
+            except Exception:  # noqa: BLE001 - 量不出体积不算失败，退化成按条目计进度
+                job.set_totals(items=len(sources))
+            return _transfer_batch(
+                progress=lambda count, current: job.advance(bytes=count, current=current),
+                should_cancel=job.cancel_requested,
+                on_item=lambda name: job.advance(items=1, current=name),
+            )
+
+        job = jobs.manager.submit(action, "%s %d 项" % (action, len(sources)), work)
+        return {
+            "ok": True,
+            "background": True,
+            "job_id": job.id,
+            "message": "已加入后台队列（%s %d 项），可在任务列表里查看进度"
+                       % (action, len(sources)),
+        }
 
     try:
         # 整批丢进线程池同步跑完再返回（与 /api/fs/zip 的做法一致）
-        await run_in_threadpool(_transfer_batch)
+        return await run_in_threadpool(_transfer_batch)
     except Exception as exc:  # noqa: BLE001
         raise _translate_error(exc)
-
-    done_count = len(copied) + len(moved)
-
-    if failures and done_count == 0:
-        # 一项都没成功，把原因直接抛给前端显示（与删除接口一致）
-        raise HTTPException(status_code=500, detail="%s失败：%s" % (action, "；".join(failures)))
-
-    if done_count:
-        message = "已%s %d 项" % (action, done_count)
-        if renamed:
-            message += "，%d 项因重名自动改名" % len(renamed)
-        if skipped:
-            message += "，%d 项已跳过" % len(skipped)
-        if failures:
-            message += "，%d 项失败" % len(failures)
-    elif skipped:
-        message = "没有需要%s的项目" % action
-    else:
-        message = "没有执行任何%s操作" % action
-
-    return {
-        "ok": True,
-        "message": message,
-        # copied/moved 里是「源名字」，renamed 里给出改名前后的名字
-        "copied": copied,
-        "moved": moved,
-        "renamed": renamed,
-        "skipped": skipped,
-        "failures": failures,
-    }
 
 
 # ---------------------------------------------------------------------------
@@ -951,6 +1121,9 @@ class ExtractPayload(BaseModel):
     target_root: str = ""
     target_path: str = ""
     overwrite: bool = False
+    # ★ 后台执行：立刻返回 job_id，前端轮询 /api/jobs/{id} 看进度。
+    #   默认 false 保持原契约（请求挂到做完为止），命令行/脚本仍然能用同步这档。
+    background: bool = False
 
 
 # 各格式的默认扩展名（给「用户只写了名字没写后缀」兜底）
@@ -1162,6 +1335,77 @@ async def compress_entries(request: Request, payload: CompressPayload) -> Dict[s
     }
 
 
+@router.get("/archive")
+async def archive_listing(request: Request, root: str = "", path: str = "",
+                          limit: int = 0) -> Dict[str, Any]:
+    """
+    列出压缩包里的条目（**只读，不解压**）。
+
+    为什么值得单独做一个接口：解压是有副作用的操作，而「看内容」没有。
+    用户想确认「这个包里到底有什么、会不会盖掉我的东西」时，不该被迫先解压
+    到磁盘上再手动删掉。
+
+    这里刻意复用 archive.list_entries —— 它本来就是解压流程的第一道安全闸门
+    （逐条目校验名字、识别加密包、修 GBK 乱码名）。因此**看到的条目名与真正
+    解压时会落盘的名字完全一致**，不会出现「列表里叫 A、解出来却叫 B」。
+    """
+    state = get_state(request)
+    cfg = _archive_cfg(state)
+
+    if not path:
+        raise HTTPException(status_code=400, detail="请先选择要查看的压缩包")
+
+    try:
+        _root_cfg, archive_path = _resolve(state.resolver, root, path)
+    except Exception as exc:  # noqa: BLE001
+        raise _translate_error(exc)
+
+    if not os.path.isfile(archive_path):
+        raise HTTPException(status_code=404, detail="压缩包不存在")
+
+    fmt = archive.detect_format(archive_path)
+    if not fmt:
+        raise HTTPException(
+            status_code=400,
+            detail="无法识别的压缩格式（支持 zip / tar / tar.gz / tar.bz2 / tar.xz / 7z / rar）",
+        )
+
+    try:
+        entries = await run_in_threadpool(
+            archive.list_entries, archive_path, fmt, cfg["max_entries"])
+    except Exception as exc:  # noqa: BLE001
+        raise _translate_archive_error(exc)
+
+    file_count = sum(1 for item in entries if not item["is_dir"])
+    total_bytes = sum(int(item.get("size") or 0)
+                      for item in entries if not item["is_dir"])
+
+    # 解压遇到同名顶层项是**整体中止**的，所以提前把冲突算出来给前端展示，
+    # 免得用户点完「解压」才发现被拒。用的是与解压完全同一份判断。
+    conflicts = archive.top_level_conflicts(entries, os.path.dirname(archive_path))
+
+    # 一个包可能有上万条目，整份塞给浏览器既慢又没用。
+    # 默认只回传前 500 条，总数单独给，前端据此提示「还有多少没显示」。
+    cap = int(limit) if limit and limit > 0 else 500
+    cap = max(1, min(cap, cfg["max_entries"]))
+
+    return {
+        "ok": True,
+        "format": fmt,
+        "name": os.path.basename(archive_path),
+        "entries": entries[:cap],
+        "shown": min(len(entries), cap),
+        "entry_count": len(entries),
+        "file_count": file_count,
+        "dir_count": len(entries) - file_count,
+        "link_count": sum(1 for item in entries if item.get("is_link")),
+        "total_bytes": total_bytes,
+        "total_text": fsops.human_size(total_bytes),
+        "conflicts": conflicts[:50],
+        "conflict_count": len(conflicts),
+    }
+
+
 @router.post("/extract")
 async def extract_archive(request: Request, payload: ExtractPayload) -> Dict[str, Any]:
     """
@@ -1225,21 +1469,56 @@ async def extract_archive(request: Request, payload: ExtractPayload) -> Dict[str
             )
         _ensure_enough_space(dest_dir, min(info["total_bytes"], 512 * 1024 * 1024), "解压")
 
-    try:
-        result = await run_in_threadpool(
-            archive.extract, archive_path, dest_dir, fmt=fmt,
-            max_entries=cfg["max_entries"], max_total_mb=cfg["max_total_mb"],
-            max_single_mb=cfg["max_single_mb"], overwrite=payload.overwrite,
-        )
-    except Exception as exc:  # noqa: BLE001
-        raise _translate_archive_error(exc)
+    def _run_extract(progress=None, should_cancel=None) -> Dict[str, Any]:
+        """同步与后台两条路径共用的解压实现。"""
+        try:
+            result = archive.extract(
+                archive_path, dest_dir, fmt=fmt,
+                max_entries=cfg["max_entries"], max_total_mb=cfg["max_total_mb"],
+                max_single_mb=cfg["max_single_mb"], overwrite=payload.overwrite,
+                progress=progress, should_cancel=should_cancel,
+            )
+        except Exception as exc:  # noqa: BLE001
+            raise _translate_archive_error(exc)
 
-    return {
-        "ok": True,
-        "format": result["format"],
-        "entries": result["entries"],
-        "extracted": result["extracted"],
-        "skipped": result["skipped"],
-        "size_text": fsops.human_size(result["total_bytes"]),
-        "target": os.path.basename(dest_dir) or dest_dir,
-    }
+        return {
+            "ok": True,
+            "format": result["format"],
+            "entries": result["entries"],
+            "extracted": result["extracted"],
+            "skipped": result["skipped"],
+            "size_text": fsops.human_size(result["total_bytes"]),
+            "target": os.path.basename(dest_dir) or dest_dir,
+        }
+
+    # ---- 后台模式：冲突检查等校验已在上面同步做完，解压本身丢给任务队列 ----
+    if payload.background:
+        def work(job) -> Dict[str, Any]:
+            # 先用条目表算出总量：这样进度条能显示「3/128 项」，
+            # 而不是一个永远不知道还剩多久的转圈。
+            try:
+                listing = archive.list_entries(archive_path, fmt, cfg["max_entries"])
+                job.set_totals(
+                    items=len(listing),
+                    total_bytes=sum(int(item.get("size") or 0) for item in listing),
+                )
+            except Exception:  # noqa: BLE001 - 量不出总量不算失败，退化成按条目计
+                pass
+
+            return _run_extract(
+                progress=lambda items, size, name: job.advance(
+                    items=items, bytes=size, current=name),
+                should_cancel=job.cancel_requested,
+            )
+
+        job = jobs.manager.submit(
+            "解压", "解压 %s" % os.path.basename(archive_path), work)
+        return {
+            "ok": True,
+            "background": True,
+            "job_id": job.id,
+            "message": "已加入后台队列（解压 %s），可在任务列表里查看进度"
+                       % os.path.basename(archive_path),
+        }
+
+    return await run_in_threadpool(_run_extract)

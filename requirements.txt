@@ -26,6 +26,12 @@ pywinpty>=2.0 ; sys_platform == "win32"
 # 压缩/解压：7z 的读写（纯 Python，自带 7z 编解码器，不依赖外部程序）
 py7zr>=0.20
 
+# 系统监控：虚拟桌面里的「任务管理器」窗口（CPU / 内存 / 网络 / 进程）
+# 注意：py7zr 目前恰好也依赖 psutil，所以它本来就会被顺带装上；
+# 但本项目的代码是**直接**用它的，因此必须在这里显式声明 ——
+# 否则哪天 py7zr 换掉这个依赖，任务管理器就会莫名其妙地失效。
+psutil>=5.9
+
 # RAR 的读取与列表（rarfile 本身不含解压算法，需要外部 UnRAR.exe，
 # 代码会在 C:\Program Files\WinRAR 等常见位置自动探测，
 # 也可以在 config.json 的 archive.unrar_path / rar_path 里指定）

@@ -166,6 +166,19 @@ export function logout() {
   return request('POST', '/api/auth/logout', { json: {} });
 }
 
+/**
+ * 修改登录口令。
+ *
+ * 服务端会校验 current_password，并在成功后**轮换 session_secret** ——
+ * 也就是所有已签发的会话（含当前这个）立即失效。所以调用方拿到成功响应后
+ * 必须引导用户重新登录，不能继续用旧会话发请求。
+ */
+export function changePassword(currentPassword, newPassword) {
+  return request('POST', '/api/auth/password', {
+    json: { current_password: currentPassword, new_password: newPassword }
+  });
+}
+
 export function authStatus() {
   return request('GET', '/api/auth/status');
 }
@@ -176,6 +189,38 @@ export function authStatus() {
 
 export function systemInfo() {
   return request('GET', '/api/system/info');
+}
+
+/**
+ * 系统负载快照（任务管理器窗口用）。
+ * @param {number} top  返回多少个进程（0 = 用服务端配置里的默认值）
+ * @param {string} sort 进程排序依据：'cpu'（默认）| 'memory'
+ */
+export function sysmonSnapshot(top, sort) {
+  return request('GET', '/api/sysmon/snapshot', {
+    params: { top: top || 0, sort: sort || 'cpu' }
+  });
+}
+
+/**
+ * 列出压缩包里的条目（只读，不解压）。
+ * @param {string} root 根标识
+ * @param {string} path 压缩包在该根下的相对路径
+ */
+export function archiveListing(root, path) {
+  return request('GET', '/api/fs/archive', { params: { root: root, path: path } });
+}
+
+/**
+ * 按文件名搜索（递归，不搜内容）。
+ * @param {string} query 关键词，至少 2 个字符
+ * @param {object} [opts] {root, limit}
+ */
+export function searchFiles(query, opts) {
+  const options = opts || {};
+  return request('GET', '/api/fs/search', {
+    params: { q: query, root: options.root || '', limit: options.limit || 0 }
+  });
 }
 
 /** 列目录；path 可以是相对路径，也可以是绝对路径（地址栏场景） */
@@ -189,6 +234,15 @@ export function listRoots() {
 
 export function makeDir(root, path, name) {
   return request('POST', '/api/fs/mkdir', { json: { root: root, path: path, name: name } });
+}
+
+/**
+ * 新建空文件。
+ * name 是**含扩展名的完整文件名**，后缀由调用方（用户自己选/填）决定。
+ * 同名已存在时服务端返回 409，绝不覆盖已有文件。
+ */
+export function newFile(root, path, name) {
+  return request('POST', '/api/fs/newfile', { json: { root: root, path: path, name: name } });
 }
 
 export function renameEntry(root, path, newName) {
@@ -211,28 +265,54 @@ export function deleteEntries(root, paths, permanent) {
  * @param {string[]} paths       源相对路径（entry.rel）
  * @param {string}   targetRoot  目标根目录 id（可与源不同 -> 跨盘）
  * @param {string}   targetPath  目标目录（相对目标根）
+ * @param {boolean}  background  置真则后台执行：立刻返回 {job_id}，由进度面板轮询
  */
-export function copyEntries(root, paths, targetRoot, targetPath) {
+export function copyEntries(root, paths, targetRoot, targetPath, background) {
   return request('POST', '/api/fs/copy', {
     json: {
       root: root,
       paths: paths,
       target_root: targetRoot || '',
-      target_path: targetPath || ''
+      target_path: targetPath || '',
+      background: !!background
     }
   });
 }
 
 /** 移动；同盘直接改名，跨盘由服务端复制后删除，重名同样自动改名 */
-export function moveEntries(root, paths, targetRoot, targetPath) {
+export function moveEntries(root, paths, targetRoot, targetPath, background) {
   return request('POST', '/api/fs/move', {
     json: {
       root: root,
       paths: paths,
       target_root: targetRoot || '',
-      target_path: targetPath || ''
+      target_path: targetPath || '',
+      background: !!background
     }
   });
+}
+
+/* ---------------------------------------------------------------------------
+   后台任务（复制 / 移动 / 解压的进度与取消）
+   --------------------------------------------------------------------------- */
+
+/** 任务列表（最近的在前）。进度面板靠它一次拿到所有活跃任务，不必逐个查。 */
+export function listJobs(limit) {
+  return request('GET', '/api/jobs', { params: { limit: limit || 20 } });
+}
+
+/** 单个任务的进度与结果（终态任务的 result 与对应同步接口形状一致） */
+export function getJob(jobId) {
+  return request('GET', '/api/jobs/' + encodeURIComponent(jobId));
+}
+
+/**
+ * 请求取消任务。
+ * 注意是**协作式**取消：这里成功只代表标记打上了，
+ * 真正停下要等任务走到下一个检查点 —— 所以要继续轮询直到 status 变 cancelled。
+ */
+export function cancelJob(jobId) {
+  return request('POST', '/api/jobs/' + encodeURIComponent(jobId) + '/cancel', { json: {} });
 }
 
 /**
@@ -278,6 +358,7 @@ export function compressEntries(payload) {
  *   target_root 解压到的根目录 id（与 target_path 同时留空则解到压缩包自己的目录）
  *   target_path 解压到的目录（相对目标根）
  *   overwrite   是否允许覆盖同名项，默认 false
+ *   background  置真则后台执行：立刻返回 {job_id}，由进度面板轮询
  */
 export function extractArchive(payload) {
   const opts = payload || {};
@@ -287,7 +368,8 @@ export function extractArchive(payload) {
       path: opts.path || '',
       target_root: opts.target_root || '',
       target_path: opts.target_path || '',
-      overwrite: !!opts.overwrite
+      overwrite: !!opts.overwrite,
+      background: !!opts.background
     }
   });
 }
