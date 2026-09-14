@@ -364,10 +364,18 @@ class TerminalSession:
         token_hash: str,
         max_output_kb: int = _DEFAULT_MAX_OUTPUT_KB,
         evict_grace: float = _EVICT_GRACE_SECONDS,
+        owner: str = "",
     ):
         self.sid = sid
         self.shell = shell
         self.cwd = start_dir or ""
+        # ★ 会话归属（多用户）：每用户的名额、淘汰范围、以及管理员看到的
+        # 「某人几个会话」都靠它。空串 = 无归属（直接构造会话的单元测试走这条，
+        # 于是它们全都算作同一个人，行为与改造前一致）。
+        #
+        # 只存**用户名**，不存角色/可见目录等会变的东西：那些要实时读用户表，
+        # 存一份快照早晚会和真相对不上。
+        self.owner = str(owner or "")
         self.idle_timeout = max(0, int(idle_timeout or 0))
         # 把「创建该会话的登录令牌哈希」绑在会话上：
         # 即使 sid 泄露，攻击者拿不到同一个 Cookie 也无法连上这个会话。
@@ -1504,6 +1512,25 @@ class TerminalManager:
     def count(self) -> int:
         return len(self._sessions)
 
+    def owner_counts(self) -> Dict[str, int]:
+        """
+        按归属统计**活跃**会话数，供管理界面显示「某用户几个命令行窗口」。
+
+        ★ 只回数量，绝不回任何会话内容（用户决定：管理员看活跃会话数 + 进程，
+        不看终端输出）。所以这里刻意返回 dict[str,int] 而不是会话列表 ——
+        接口形状本身就杜绝了「顺手把输出也带上」。
+
+        已经死掉且没客户端连着的会话不算：它们下一次 create/prune 就会被清掉，
+        统计里带上会让管理员看到永远不降的数字。
+        """
+        counts: Dict[str, int] = {}
+        for session in list(self._sessions.values()):
+            if session.is_dead() and not session.has_clients():
+                continue
+            key = session.owner or ""
+            counts[key] = counts.get(key, 0) + 1
+        return counts
+
     def _prune_locked(self) -> None:
         """
         清理**已经死掉且没有客户端连着**的会话（调用方需持有锁）。
@@ -1536,6 +1563,8 @@ class TerminalManager:
         rows: int = 30,
         max_output_kb: int = _DEFAULT_MAX_OUTPUT_KB,
         evict_grace: float = _EVICT_GRACE_SECONDS,
+        owner: str = "",
+        max_total: int = 0,
     ) -> TerminalSession:
         """
         创建一个新会话。
@@ -1558,6 +1587,16 @@ class TerminalManager:
         max_output_kb 决定会话自己保留多少输出（terminal.max_output_kb）。
         它与客户端无关：即使一个客户端都没连，会话也会保留最近这么多输出，
         供之后重连的客户端读取。
+
+        ★ 多用户下 max_sessions 的含义（重要）：
+        它约束的是**该会话归属者（owner）自己的**会话数，不是全机总数。
+        配套两条：
+          * 名额满了只在该 owner 的会话里挑人顶掉 —— 学生 A 开新窗口
+            绝不能杀掉学生 B 正在跑训练的 cmd，那是灾难性的。
+          * owner 为空串时（直接构造会话的单元测试）所有会话都算同一个人，
+            于是行为与改造前完全一致。
+        全机总量另有 max_total 兜底（<=0 表示不设限）：它只防「总量失控」，
+        淘汰范围不限定 owner（否则谁都腾不出名额），也是最后手段。
         """
         lock = self._get_lock()
         async with lock:
@@ -1568,11 +1607,25 @@ class TerminalManager:
 
             limit = max(1, int(max_sessions or 1))
             victim: Optional[TerminalSession] = None
-            if len(self._sessions) >= limit:
+
+            # 全机总量兜底（最后手段，所以放在前面判）：到这里还没满就说明
+            # 问题只可能在「这个人的名额」，交给下面那段。
+            if max_total > 0 and len(self._sessions) >= int(max_total):
                 victim = self._pick_evictable_locked()
                 if victim is None:
                     raise TerminalLimitError(
-                        "命令行会话数已达上限（%d 个），请先关闭其它命令提示符窗口后重试。"
+                        "服务器上命令行会话总数已达上限（%d 个），请稍后再试，"
+                        "或先关闭不再使用的命令提示符窗口。" % int(max_total)
+                    )
+                self._sessions.pop(victim.sid, None)
+
+            # 本用户的名额（常规限制）
+            mine = sum(1 for s in self._sessions.values() if s.owner == owner)
+            if mine >= limit:
+                victim = self._pick_evictable_locked(owner)
+                if victim is None:
+                    raise TerminalLimitError(
+                        "你的命令行会话数已达上限（%d 个），请先关闭其它命令提示符窗口后重试。"
                         "（浏览器断开只是让窗口挂起，请在该窗口里点关闭，"
                         "或等空闲超时自动回收）" % limit
                     )
@@ -1588,6 +1641,7 @@ class TerminalManager:
                 token_hash=_token_hash(session_token),
                 max_output_kb=max_output_kb,
                 evict_grace=evict_grace,
+                owner=owner,
             )
             # 让空闲回收走管理器：它负责先从注册表摘除再关闭（见 set_reap_callback）
             session.set_reap_callback(self.close_session)
@@ -1609,7 +1663,7 @@ class TerminalManager:
             self._ensure_sweeper()
             return session
 
-    def _pick_evictable_locked(self) -> Optional[TerminalSession]:
+    def _pick_evictable_locked(self, owner: Optional[str] = None) -> Optional[TerminalSession]:
         """
         名额已满时挑一个可以牺牲的会话（调用方需持有锁）。
 
@@ -1628,12 +1682,18 @@ class TerminalManager:
         有客户端连着的会话一律不动（正在用，绝不能抢）；
         没有任何可淘汰的才真的报「会话数已达上限」。
         优先顶掉闲置最久的那个（LRU）。
+
+        ★ owner 参数是多用户加的一道**硬边界**：给了 owner 就只在这个人的
+        会话里挑。绝不能因为「张同学开新窗口」把「李同学正在跑 PyTorch 的
+        窗口」顶掉 —— 那是直接毁掉别人几小时的训练。传 None 表示不限定归属，
+        只给全机总量兜底那条路用（那种情况必须能腾出名额，否则整机卡死）。
         """
         # 统一用 idle_seconds（= 从最后一个客户端离开起算了多久）作为
         # 「闲置程度」的唯一口径，与空闲回收用的是同一个定义，避免两处跑偏。
         candidates = [
             s for s in self._sessions.values()
-            if not s.has_clients() and s.idle_seconds() >= s.evict_grace
+            if (owner is None or s.owner == owner)
+            and not s.has_clients() and s.idle_seconds() >= s.evict_grace
         ]
         if not candidates:
             return None

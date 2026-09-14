@@ -352,6 +352,27 @@ def require_admin(request: Request) -> Dict[str, Any]:
     return user
 
 
+def is_admin(request: Request) -> bool:
+    """
+    当前用户是不是管理员（**不抛异常**的版本）。
+
+    给「管理员看全部、子用户看自己」这类分流用：那边不是权限拒绝，
+    而是同一个接口有两种可见范围，用 require_admin 反而要写 try/except。
+    """
+    return str(get_user(request).get("role") or "") == "admin"
+
+
+def owner_of(request: Request) -> str:
+    """
+    当前登录用户的用户名，用作**归属标记**（后台任务 / 终端会话）。
+
+    统一从这里取，免得各处自己拼 `user["username"]` —— 归属标记一旦在两处
+    对不上（比如一处用了显示名、一处用了登录名），过滤就会静默失效：
+    表现是「列表里看不到自己的任务」，而不是报错，很难查。
+    """
+    return str(get_user(request).get("username") or "")
+
+
 # ---------------------------------------------------------------------------
 # 安全小工具
 # ---------------------------------------------------------------------------

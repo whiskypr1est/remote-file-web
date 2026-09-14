@@ -100,7 +100,7 @@ from typing import Any, Dict, Optional
 from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 
-from ..deps import SESSION_COOKIE, client_ip, get_state, resolver_of
+from ..deps import SESSION_COOKIE, client_ip, get_state, get_user, owner_of, resolver_of
 from ..terminal import (
     SessionGone,
     SessionReplaced,
@@ -164,7 +164,7 @@ def _is_enabled(tcfg: Dict[str, Any]) -> bool:
     return bool(tcfg.get("enabled", True))
 
 
-def _resolve_start_dir(resolver, tcfg: Dict[str, Any]) -> str:
+def _resolve_start_dir(resolver, tcfg: Dict[str, Any], base_dir: str = "") -> str:
     """
     决定 shell 的启动目录。
 
@@ -174,6 +174,8 @@ def _resolve_start_dir(resolver, tcfg: Dict[str, Any]) -> str:
 
     这里接收 resolver 而不是 state：多用户下解析器是**按用户**的，
     而本函数没有 request 可用来取当前用户（调用方负责传进来）。
+    base_dir 同理由调用方传入，只作最后的兜底 —— 写死 state 会直接 NameError，
+    而这条分支恰恰会被「还没有分配任何目录的新学生」走到。
     """
     configured = str(tcfg.get("start_dir") or "").strip()
     if configured:
@@ -191,7 +193,7 @@ def _resolve_start_dir(resolver, tcfg: Dict[str, Any]) -> str:
     except Exception:  # noqa: BLE001
         pass
 
-    return state.base_dir or os.getcwd()
+    return base_dir or os.getcwd()
 
 
 def _audit(message: str) -> None:
@@ -229,9 +231,27 @@ async def create_session(request: Request, payload: Optional[SessionPayload] = N
         )
 
     shell = str(tcfg.get("shell") or "cmd.exe")
-    start_dir = _resolve_start_dir(resolver_of(request), tcfg)
+    start_dir = _resolve_start_dir(resolver_of(request), tcfg, state.base_dir)
     idle_timeout = int(tcfg.get("idle_timeout_seconds") or 0)
-    max_sessions = int(tcfg.get("max_sessions") or 4)
+
+    # ★ 命令行名额现在是**每用户**的（用户决定：每人 5 个窗口）。
+    # 涉及两个数，取小的那个：
+    #   cfg_policy —— 全站政策上限（terminal.max_sessions），对所有人生效；
+    #   user_quota —— 这个人的额度（用户表的 max_terminal_sessions，默认 5）。
+    # 取小是为了两头都不失控：配置收紧能立刻约束所有人（改造前 max_sessions=1
+    # 就是靠这条生效的），管理员也能单独给某人调低。想给某人开得更多，
+    # 把配置一起调大即可 —— 两个数字里任何一个都能单独卡住人，
+    # 比「静默忽略其中一个」好排查得多。
+    user = get_user(request)
+    cfg_policy = int(tcfg.get("max_sessions") or 5)
+    user_quota = int(user.get("max_terminal_sessions") or cfg_policy)
+    max_sessions = max(1, min(cfg_policy, user_quota))
+    # 全机总量兜底（0 = 不设限）：防「每人 5 个 × 很多人」把机器拖垮。
+    # 它只在真的失控时才触发，淘汰范围不限定归属（否则谁都腾不出名额）。
+    max_total = int(tcfg.get("max_sessions_total") or 0)
+    # 会话归属：管理界面按它统计「某人几个窗口」，名额与淘汰也都按它分。
+    owner = owner_of(request)
+
     # 会话自己保留多少输出。★ 会话可分离之后这个值的作用从「浏览器侧裁剪」
     # 变成了「服务端保留多少积压输出」：它决定了用户关掉标签页一段时间后
     # 再回来能看到多久以前的输出。
@@ -259,6 +279,8 @@ async def create_session(request: Request, payload: Optional[SessionPayload] = N
             rows=rows,
             max_output_kb=max_output_kb,
             evict_grace=evict_grace,
+            owner=owner,
+            max_total=max_total,
         )
     except TerminalLimitError as exc:
         raise HTTPException(status_code=429, detail=str(exc))
@@ -275,10 +297,12 @@ async def create_session(request: Request, payload: Optional[SessionPayload] = N
         raise HTTPException(status_code=500, detail="创建命令行会话失败：%s" % exc)
 
     # ★ 审计：每一次成功创建命令行会话都留痕（谁、从哪里、什么 shell、起始目录）
+    # 多用户之后「谁」是这里最要紧的一列：出问题时得能说清是哪个账号开的 shell。
     info = session.describe()
     _audit(
-        "创建会话 ip=%s sid=%s shell=%s 后端=%s cwd=%s 尺寸=%sx%s 代码页=%s 编码=%s 超时=%s秒"
+        "创建会话 用户=%s ip=%s sid=%s shell=%s 后端=%s cwd=%s 尺寸=%sx%s 代码页=%s 编码=%s 超时=%s秒 名额=%s"
         % (
+            owner or "(未知)",
             ip,
             info["sid"],
             info["shell"],
@@ -289,6 +313,7 @@ async def create_session(request: Request, payload: Optional[SessionPayload] = N
             info["code_page"] if info["code_page"] is not None else "未探测到",
             info["codec"],
             info["idle_timeout"],
+            max_sessions,
         )
     )
 

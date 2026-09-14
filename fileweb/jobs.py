@@ -51,11 +51,17 @@ DEFAULT_KEEP_SECONDS = 600.0
 class Job:
     """一个后台任务的运行状态。"""
 
-    def __init__(self, kind: str, title: str, work: Callable[["Job"], Any]) -> None:
+    def __init__(self, kind: str, title: str, work: Callable[["Job"], Any],
+                 owner: str = "") -> None:
         self.id = "job_" + uuid.uuid4().hex[:16]
         self.kind = kind
         self.title = title
         self.work = work
+        # ★ 任务归属（多用户）：列表要按它过滤、取消要校验归属。
+        # 没有 owner 的话，任何一个登录用户都能列出**并取消**别人的任务 ——
+        # 学生按住「取消」就能把同学正在跑的大复制/解压掐掉。
+        # 空串 = 无归属（直接构造 Job 的单元测试走这条）。
+        self.owner = str(owner or "")
 
         self.status = STATUS_PENDING
         self.created = time.time()
@@ -135,6 +141,8 @@ class Job:
                 "id": self.id,
                 "kind": self.kind,
                 "title": self.title,
+                # 归属：管理员看全部任务时靠它区分「这是谁提交的」
+                "owner": self.owner,
                 "status": self.status,
                 "percent": round(percent, 1),
                 "done_items": done_items,
@@ -171,9 +179,10 @@ class JobManager:
 
     # -- 对外接口 -----------------------------------------------------------
 
-    def submit(self, kind: str, title: str, work: Callable[[Job], Any]) -> Job:
+    def submit(self, kind: str, title: str, work: Callable[[Job], Any],
+               owner: str = "") -> Job:
         """提交任务，立刻返回 Job（此时通常还在排队）。"""
-        job = Job(kind, title, work)
+        job = Job(kind, title, work, owner=owner)
         with self._lock:
             self._jobs[job.id] = job
             self._order.append(job.id)
@@ -181,26 +190,59 @@ class JobManager:
         self._pump()
         return job
 
-    def get(self, job_id: str) -> Optional[Job]:
-        with self._lock:
-            return self._jobs.get(job_id)
+    def get(self, job_id: str, owner: Optional[str] = None) -> Optional[Job]:
+        """
+        按 id 取任务。
 
-    def list(self, limit: int = 50) -> List[Job]:
-        """按提交时间倒序返回（最近的在前）。"""
+        ``owner`` 给了就只认这个人的任务：别人的任务返回 None，
+        与「不存在」**完全同形** —— 不泄露「这个 id 是存在的，只是不归你」。
+        管理员传 None 表示不限定归属（看得见全部）。
+        """
         with self._lock:
-            ids = [jid for jid in reversed(self._order)][:max(1, int(limit))]
-            return [self._jobs[jid] for jid in ids if jid in self._jobs]
+            job = self._jobs.get(job_id)
+            if job is None:
+                return None
+            if owner is not None and job.owner != owner:
+                return None
+            return job
 
-    def cancel(self, job_id: str) -> Optional[Job]:
+    def list(self, limit: int = 50, owner: Optional[str] = None) -> List[Job]:
+        """
+        按提交时间倒序返回（最近的在前）。
+
+        ``owner`` 给了就只回这个人的任务（子用户看自己的进度面板）；
+        管理员传 None 看全部。★ 注意过滤要在**取 limit 之前**做，
+        否则「先截断再过滤」会让子用户在别人任务多的时候看到空列表。
+        """
+        with self._lock:
+            ids = [jid for jid in reversed(self._order)]
+            selected: List[Job] = []
+            for jid in ids:
+                job = self._jobs.get(jid)
+                if job is None:
+                    continue
+                if owner is not None and job.owner != owner:
+                    continue
+                selected.append(job)
+                if len(selected) >= max(1, int(limit)):
+                    break
+            return selected
+
+    def cancel(self, job_id: str, owner: Optional[str] = None) -> Optional[Job]:
         """
         请求取消。
 
         注意返回的是「已经打了取消标记」的任务，不代表它此刻已经停了 ——
         真正停下要等工作函数在下一次检查点退出，终态会变成 cancelled。
+
+        归属校验与 get() 一致：给了 owner 就只允许取消自己的任务，
+        别人的一律返回 None（同「不存在」）。
         """
         with self._lock:
             job = self._jobs.get(job_id)
             if job is None:
+                return None
+            if owner is not None and job.owner != owner:
                 return None
             if job.status in TERMINAL_STATUSES:
                 return job
@@ -213,16 +255,22 @@ class JobManager:
                     self._queue.remove(job)
             return job
 
-    def stats(self) -> Dict[str, int]:
+    def stats(self, owner: Optional[str] = None) -> Dict[str, int]:
+        """
+        队列统计。
+
+        ``owner`` 给了就只统计这个人的任务（子用户的进度面板显示自己的），
+        但 ``max_concurrent`` 是全局参数，任何情况下都照实回。
+        """
         with self._lock:
-            running = sum(1 for job in self._jobs.values()
-                          if job.status == STATUS_RUNNING)
-            pending = sum(1 for job in self._jobs.values()
-                          if job.status == STATUS_PENDING)
+            jobs = [job for job in self._jobs.values()
+                    if owner is None or job.owner == owner]
+            running = sum(1 for job in jobs if job.status == STATUS_RUNNING)
+            pending = sum(1 for job in jobs if job.status == STATUS_PENDING)
             return {
                 "running": running,
                 "pending": pending,
-                "total": len(self._jobs),
+                "total": len(jobs),
                 "max_concurrent": self._max_concurrent,
             }
 

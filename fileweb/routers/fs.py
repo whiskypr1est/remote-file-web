@@ -45,7 +45,7 @@ from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
 from .. import archive, fsops, jobs
-from ..deps import get_state, resolver_of
+from ..deps import get_state, owner_of, resolver_of
 from ..http_utils import file_response
 from ..security import PathSecurityError, is_blocked_extension, is_protected, is_within
 
@@ -809,7 +809,8 @@ async def _transfer_entries(request: Request, payload: TransferPayload, move: bo
                 on_item=lambda name: job.advance(items=1, current=name),
             )
 
-        job = jobs.manager.submit(action, "%s %d 项" % (action, len(sources)), work)
+        job = jobs.manager.submit(action, "%s %d 项" % (action, len(sources)), work,
+                                  owner=owner_of(request))
         return {
             "ok": True,
             "background": True,
@@ -1512,7 +1513,8 @@ async def extract_archive(request: Request, payload: ExtractPayload) -> Dict[str
             )
 
         job = jobs.manager.submit(
-            "解压", "解压 %s" % os.path.basename(archive_path), work)
+            "解压", "解压 %s" % os.path.basename(archive_path), work,
+            owner=owner_of(request))
         return {
             "ok": True,
             "background": True,

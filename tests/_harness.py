@@ -150,7 +150,15 @@ class ServerProcess:
         #   起的服务器会把真实部署的布局覆盖成测试数据 —— 实测发生过：
         #   项目根目录的 user_state.json 里出现了一个指向临时测试目录
         #   （Temp\sstest\root）的命令行窗口，用户下次打开就会看到这个脏窗口。
+        #
+        # ★ desktop_shortcuts_path 是同一类东西，必须一起覆盖：
+        #   这里的 prepare() 是**不带 cfg_path** 调的，所以相对路径会按代码目录
+        #   解析成绝对路径再写进临时配置，子进程看到的就是项目根目录 ——
+        #   于是测试建的快捷方式会真的落到真实桌面上。
+        #   （实测发生过一次：项目根目录冒出 desktop_shortcuts.stu01.json。）
         cfg["user_state_path"] = os.path.join(self.work, "user_state.json")
+        cfg["desktop_shortcuts_path"] = os.path.join(
+            self.work, "desktop_shortcuts.json")
         cfg["auth"]["username"] = username
         cfg["auth"]["password_hash"] = security.hash_password(password)
         cfg["auth"]["password"] = ""

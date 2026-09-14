@@ -70,9 +70,9 @@ class UserStatePayload(BaseModel):
 
 @router.get("/shortcuts")
 async def list_shortcuts(request: Request) -> Dict[str, Any]:
-    """列出全部桌面快捷方式，并标注目标是否仍然存在。"""
+    """列出**当前用户**的桌面快捷方式，并标注目标是否仍然存在。"""
     state = get_state(request)
-    items = shortcuts.list_items()
+    items = shortcuts.list_items(get_user(request))
 
     result: List[Dict[str, Any]] = []
     for item in items:
@@ -117,6 +117,7 @@ async def create_shortcut(request: Request, payload: ShortcutPayload) -> Dict[st
             root=root_cfg["id"],
             rel=resolver_of(request).to_rel(root_cfg, abs_path),
             is_dir=os.path.isdir(abs_path),
+            user=get_user(request),
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -132,7 +133,7 @@ async def create_shortcut(request: Request, payload: ShortcutPayload) -> Dict[st
 async def rename_shortcut(request: Request, payload: ShortcutRenamePayload) -> Dict[str, Any]:
     """重命名快捷方式（只改显示名，不影响指向的真实路径）。"""
     try:
-        item = shortcuts.rename(payload.id, payload.name)
+        item = shortcuts.rename(payload.id, payload.name, get_user(request))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
@@ -145,7 +146,7 @@ async def rename_shortcut(request: Request, payload: ShortcutRenamePayload) -> D
 @router.post("/shortcuts/delete")
 async def delete_shortcut(request: Request, payload: ShortcutIdPayload) -> Dict[str, Any]:
     """删除快捷方式（只删桌面图标，不动真实文件）。"""
-    if not shortcuts.remove(payload.id):
+    if not shortcuts.remove(payload.id, get_user(request)):
         raise HTTPException(status_code=404, detail="快捷方式不存在或已被删除")
 
     return {"ok": True, "message": "快捷方式已从桌面移除（真实文件未受影响）"}
@@ -168,9 +169,9 @@ async def get_desktop_state(request: Request) -> Dict[str, Any]:
     所以这里不会出现 404 —— 「没有状态」本身就是一个正常状态。
     """
     get_state(request)
-    get_user(request)
+    user = get_user(request)
 
-    return {"ok": True, "state": userstate.load()}
+    return {"ok": True, "state": userstate.load(user=user)}
 
 
 @router.put("/state")
@@ -187,14 +188,14 @@ async def put_desktop_state(
     与同目录的快捷方式接口完全一致。
     """
     get_state(request)
-    get_user(request)
+    user = get_user(request)
 
     data = payload.state if payload is not None else None
     if data is None:
         raise HTTPException(status_code=400, detail="缺少 state 字段")
 
     try:
-        userstate.save(data)
+        userstate.save(data, user=user)
     except userstate.UserStateTooLargeError as exc:
         # 超过体积上限：明确报错而不是静默截断，否则存进去的 JSON 已经不可解析，
         # 前端下次取回来只会更困惑

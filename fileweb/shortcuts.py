@@ -23,6 +23,11 @@
 并发安全：
     所有读写都在同一把锁里完成，避免多个请求同时写文件造成内容损坏；
     写入采用「临时文件 + os.replace」的原子替换，断电也不会写坏。
+
+★ 多用户：快捷方式也是**按用户分开**存的。原先是一个单文件大家共用，
+学生 A 建一个快捷方式，所有人的桌面上都会冒出来，删掉还会互相打架。
+管理员沿用原来的单文件，子用户各用 `desktop_shortcuts.<用户名>.json`
+（规则与理由见 peruser.py）。
 """
 
 from __future__ import annotations
@@ -35,9 +40,34 @@ import threading
 import time
 from typing import Any, Dict, List, Optional
 
+from . import peruser
+
 # 快捷方式数据文件（与 config.json 同目录）
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SHORTCUTS_PATH = os.path.join(BASE_DIR, "desktop_shortcuts.json")
+
+# ★ 基础路径（管理员的文件）。config.prepare() 会用配置项覆盖它 ——
+# 与 userstate.ACTIVE_PATH 同一套「单向下发」的写法，避免循环导入。
+# 之所以必须可配置：测试用临时配置起子进程时，快捷方式不该写进项目根目录
+# 那份**真实**的 desktop_shortcuts.json（本项目已经因为「测试写到真实状态
+# 文件」出过一次事故，见 config.save 的 _cfg_path）。
+ACTIVE_PATH = SHORTCUTS_PATH
+
+
+def set_path(path: str) -> None:
+    """由 config.prepare() 调用：指定基础（管理员）数据文件位置。"""
+    global ACTIVE_PATH
+    ACTIVE_PATH = str(path or "") or SHORTCUTS_PATH
+
+
+def path_for(user: Optional[Dict[str, Any]] = None) -> str:
+    """
+    某个用户实际该读写的文件。
+
+    不传 user 或管理员 → 基础路径（升级前后同一份，管理员桌面不变）；
+    子用户 → 同目录的 `desktop_shortcuts.<用户名>.json`。
+    """
+    return peruser.state_path(ACTIVE_PATH or SHORTCUTS_PATH, user)
 
 _LOCK = threading.RLock()
 
@@ -63,12 +93,12 @@ def _atomic_write(path: str, data: Dict[str, Any]) -> None:
         raise
 
 
-def _read_raw() -> Dict[str, Any]:
+def _read_raw(target: str) -> Dict[str, Any]:
     """读取原始数据；文件不存在或损坏时返回空结构（不抛异常，保证桌面能正常加载）。"""
-    if not os.path.isfile(SHORTCUTS_PATH):
+    if not os.path.isfile(target):
         return {"version": 1, "items": []}
     try:
-        with open(SHORTCUTS_PATH, "r", encoding="utf-8-sig") as fh:
+        with open(target, "r", encoding="utf-8-sig") as fh:
             data = json.load(fh)
     except Exception:  # noqa: BLE001
         return {"version": 1, "items": []}
@@ -103,10 +133,11 @@ def _normalize(item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     }
 
 
-def list_items() -> List[Dict[str, Any]]:
-    """返回所有快捷方式（按创建时间正序，界面上顺序稳定）。"""
+def list_items(user: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+    """返回该用户的全部快捷方式（按创建时间正序，界面上顺序稳定）。"""
+    target = path_for(user)
     with _LOCK:
-        data = _read_raw()
+        data = _read_raw(target)
         items = []
         for raw in data["items"]:
             normalized = _normalize(raw)
@@ -116,7 +147,8 @@ def list_items() -> List[Dict[str, Any]]:
         return items
 
 
-def add(name: str, root: str, rel: str, is_dir: bool = True) -> Dict[str, Any]:
+def add(name: str, root: str, rel: str, is_dir: bool = True,
+        user: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """
     新增（或更新同名同路径的）快捷方式。
 
@@ -132,8 +164,9 @@ def add(name: str, root: str, rel: str, is_dir: bool = True) -> Dict[str, Any]:
     if not clean_root:
         raise ValueError("缺少根目录标识")
 
+    path = path_for(user)
     with _LOCK:
-        data = _read_raw()
+        data = _read_raw(path)
         items = [entry for entry in (_normalize(x) for x in data["items"]) if entry]
 
         for existing in items:
@@ -149,29 +182,31 @@ def add(name: str, root: str, rel: str, is_dir: bool = True) -> Dict[str, Any]:
             "created": time.time(),
         }
         items.append(item)
-        _atomic_write(SHORTCUTS_PATH, {"version": 1, "items": items})
+        _atomic_write(path, {"version": 1, "items": items})
         return item
 
 
-def remove(shortcut_id: str) -> bool:
+def remove(shortcut_id: str, user: Optional[Dict[str, Any]] = None) -> bool:
     """删除指定快捷方式，返回是否真的删掉了。"""
     target = str(shortcut_id or "").strip()
     if not target:
         return False
 
+    path = path_for(user)
     with _LOCK:
-        data = _read_raw()
+        data = _read_raw(path)
         items = [entry for entry in (_normalize(x) for x in data["items"]) if entry]
         remaining = [entry for entry in items if entry["id"] != target]
 
         if len(remaining) == len(items):
             return False
 
-        _atomic_write(SHORTCUTS_PATH, {"version": 1, "items": remaining})
+        _atomic_write(path, {"version": 1, "items": remaining})
         return True
 
 
-def rename(shortcut_id: str, new_name: str) -> Optional[Dict[str, Any]]:
+def rename(shortcut_id: str, new_name: str,
+           user: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
     """重命名快捷方式（只改显示名，不影响指向的真实路径）。"""
     clean_name = str(new_name or "").strip()[:_MAX_NAME_LEN]
     if not clean_name:
@@ -179,8 +214,9 @@ def rename(shortcut_id: str, new_name: str) -> Optional[Dict[str, Any]]:
 
     target = str(shortcut_id or "").strip()
 
+    path = path_for(user)
     with _LOCK:
-        data = _read_raw()
+        data = _read_raw(path)
         items = [entry for entry in (_normalize(x) for x in data["items"]) if entry]
 
         updated = None
@@ -193,14 +229,15 @@ def rename(shortcut_id: str, new_name: str) -> Optional[Dict[str, Any]]:
         if updated is None:
             return None
 
-        _atomic_write(SHORTCUTS_PATH, {"version": 1, "items": items})
+        _atomic_write(path, {"version": 1, "items": items})
         return updated
 
 
-def clear() -> int:
-    """清空全部快捷方式，返回删除数量。"""
+def clear(user: Optional[Dict[str, Any]] = None) -> int:
+    """清空该用户的全部快捷方式，返回删除数量。"""
+    path = path_for(user)
     with _LOCK:
-        data = _read_raw()
+        data = _read_raw(path)
         count = len([1 for x in data["items"] if _normalize(x)])
-        _atomic_write(SHORTCUTS_PATH, {"version": 1, "items": []})
+        _atomic_write(path, {"version": 1, "items": []})
         return count

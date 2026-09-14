@@ -11,6 +11,10 @@
 因此这份状态必须由服务端落盘持久化，与 desktop_shortcuts.json 走同一套思路：
 不能用浏览器 localStorage（换台电脑就没了、清缓存就没了）。
 
+★ 多用户：这份状态是**按用户分开**存的（各人一份文件），否则「关掉浏览器再
+打开还是原来的桌面」会变成「看到别人刚才的桌面」。管理员沿用原来的单文件，
+子用户各用 `user_state.<用户名>.json`，细节见 peruser.py。
+
 存储结构：
     文件里就是一份**不透明**的 JSON 对象，服务端不解释其中任何字段：
 
@@ -35,6 +39,8 @@ import os
 import tempfile
 import threading
 from typing import Any, Dict, Optional
+
+from . import peruser
 
 # 界面状态数据文件（与 config.json 同目录）
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -114,15 +120,20 @@ def _serialize(data: Dict[str, Any]) -> str:
     return json.dumps(data, ensure_ascii=False, allow_nan=False)
 
 
-def load(path: Optional[str] = None) -> Dict[str, Any]:
+def load(path: Optional[str] = None,
+         user: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """
     读取状态。
 
     文件缺失、不可读、损坏、根节点不是对象时一律返回空字典 {}，
     **绝不抛异常**：这份状态只影响「桌面看起来是否和上次一样」，
     让它把整个桌面加载流程搞崩是不划算的，前端拿到 {} 会走默认布局。
+
+    :param user: 当前登录用户。管理员读基础文件（升级前后同一份），
+                 子用户读自己的 `user_state.<用户名>.json`（见 peruser.py）。
+                 显式给了 path 时以 path 为准（单元测试就是这么用的）。
     """
-    target = path or _path()
+    target = path or peruser.state_path(_path(), user)
 
     with _LOCK:
         if not os.path.isfile(target):
@@ -140,7 +151,8 @@ def load(path: Optional[str] = None) -> Dict[str, Any]:
         return data
 
 
-def save(data: Dict[str, Any], path: Optional[str] = None) -> None:
+def save(data: Dict[str, Any], path: Optional[str] = None,
+         user: Optional[Dict[str, Any]] = None) -> None:
     """
     保存状态（原子替换）。
 
@@ -148,11 +160,13 @@ def save(data: Dict[str, Any], path: Optional[str] = None) -> None:
     超过 MAX_STATE_BYTES 时抛 UserStateTooLargeError（路由层翻译成 413）。
     这里刻意**不静默截断**：截断后的 JSON 通常已经无法解析，
     前端再取回来只会更困惑。
+
+    :param user: 与 load 同义，决定写进哪个用户的文件。
     """
     if not isinstance(data, dict):
         raise TypeError("界面状态必须是一个 JSON 对象")
 
-    target = path or _path()
+    target = path or peruser.state_path(_path(), user)
 
     try:
         text = _serialize(data)
@@ -169,14 +183,15 @@ def save(data: Dict[str, Any], path: Optional[str] = None) -> None:
         _atomic_write(target, data)
 
 
-def clear(path: Optional[str] = None) -> bool:
+def clear(path: Optional[str] = None,
+          user: Optional[Dict[str, Any]] = None) -> bool:
     """
     删除状态文件（恢复默认布局用），返回是否真的删掉了。
 
     留着这个入口是为了「重置桌面布局」这类功能：
     与其写一个空对象进去，不如把文件删掉，语义更干净。
     """
-    target = path or _path()
+    target = path or peruser.state_path(_path(), user)
     with _LOCK:
         try:
             os.unlink(target)

@@ -103,7 +103,16 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     # 前端内存里那份布局刷新一次就没了，所以由服务端持久化一份**不透明**的
     # JSON 文档（服务端不解释其中任何字段），关掉浏览器再打开就能恢复原样。
     # 与 desktop_shortcuts.json 同目录，方便一起备份/清理。
+    #
+    # ★ 多用户：这两个值是**基础路径**，也就是管理员用的那一份（沿用原名，
+    #   升级前后完全不变）。子用户各自落在同目录的
+    #   user_state.<用户名>.json / desktop_shortcuts.<用户名>.json，
+    #   否则多人共用一个文件会互相覆盖对方桌面。见 fileweb/peruser.py。
     "user_state_path": "user_state.json",
+
+    # 桌面快捷方式文件位置。与 user_state_path 同样解析（相对路径以配置文件
+    # 所在目录为基准），同样只是「基础路径」。
+    "desktop_shortcuts_path": "desktop_shortcuts.json",
 
     "upload": {
         "max_file_size_mb": 2048,     # 单文件上限 2GB
@@ -129,10 +138,19 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "enabled": True,
         # 要启动的 shell，也可以换成 powershell.exe
         "shell": "cmd.exe",
-        # 同时允许打开的命令行会话数上限
-        "max_sessions": 4,
-        # 空闲多久自动关闭会话（秒），0 = 不限制
-        "idle_timeout_seconds": 1800,
+        # ★ 每人同时允许打开的命令行会话数上限（多用户：按用户计，不是全机）。
+        # 用户表里的 max_terminal_sessions 是「这个人的额度」（默认 5），
+        # 本项是「全站政策上限」，两者取小生效（见 routers/terminal.py）。
+        # 想给某人多开，把这里也一起调大。
+        "max_sessions": 5,
+        # ★ 全机命令行会话总数上限（0 = 不设限）。只防「每人 5 个 × 很多人」
+        # 把机器拖垮；真的触顶时会顶掉闲置最久的分离会话，否则才拒绝新建。
+        "max_sessions_total": 64,
+        # 空闲多久自动关闭会话（秒），0 = 不限制。
+        # ★ 多用户下定为 0（用户决定）：学生关掉浏览器后 cmd 一直留着，
+        # 方便回来接着看输出；总量由上面的每用户名額与全机上限管住，
+        # 不再靠「半小时后自动回收」兜底。
+        "idle_timeout_seconds": 0,
         # 单个会话在浏览器侧保留的输出上限（KB）
         "max_output_kb": 512,
         # ★ 分离会话至少闲置多久才允许被「挤掉」以腾出 max_sessions 名额（秒）。
@@ -487,8 +505,9 @@ def prepare(cfg: Dict[str, Any], cfg_path: str = "") -> Dict[str, Any]:
     terminal["enabled"] = bool(terminal.get("enabled", DEFAULT_CONFIG["terminal"]["enabled"]))
     terminal["shell"] = str(terminal.get("shell") or DEFAULT_CONFIG["terminal"]["shell"])
     for key, default, low in (
-        ("max_sessions", 4, 1),
-        ("idle_timeout_seconds", 1800, 0),
+        ("max_sessions", 5, 1),
+        ("max_sessions_total", 64, 0),
+        ("idle_timeout_seconds", 0, 0),
         ("max_output_kb", 512, 32),
         ("evict_grace_seconds", 20, 0),
     ):
@@ -505,7 +524,7 @@ def prepare(cfg: Dict[str, Any], cfg_path: str = "") -> Dict[str, Any]:
     except (TypeError, ValueError):
         preview["text_max_kb"] = 2048
 
-    # 界面状态文件 -> 绝对路径。
+    # 状态文件（界面状态 / 桌面快捷方式）-> 绝对路径。
     #
     # ★ 相对路径的基准是**当前配置文件所在目录**，而不是代码目录（BASE_DIR）。
     #   这与上面 FIRST_RUN_PASSWORD.txt 的处置是同一条教训，而且后果更重：
@@ -518,25 +537,39 @@ def prepare(cfg: Dict[str, Any], cfg_path: str = "") -> Dict[str, Any]:
     #   不会去覆盖真实部署的 user_state.json。
     #
     #   显式写的绝对路径一律尊重（用户明确指定位置就该听他的）。
-    _raw_state_path = str(cfg.get("user_state_path") or "").strip()
-    if not _raw_state_path:
-        _raw_state_path = DEFAULT_CONFIG["user_state_path"]
-    if os.path.isabs(_raw_state_path):
-        cfg["user_state_path"] = os.path.normpath(_raw_state_path)
-    elif cfg_path:
-        cfg["user_state_path"] = os.path.normpath(os.path.join(
-            os.path.dirname(os.path.abspath(cfg_path)), _raw_state_path))
-    else:
+    #
+    # ★ 多用户：这里解析出来的两个都只是**基础路径**（管理员用的那一份）。
+    #   子用户的文件由 peruser.state_path 在同一目录下按用户名派生，
+    #   所以「每个学生的桌面各存一份」不需要再多两个配置项。
+    def _resolve_under_config(raw_value: Any, default: str) -> str:
+        raw = str(raw_value or "").strip() or default
+        if os.path.isabs(raw):
+            return os.path.normpath(raw)
+        if cfg_path:
+            return os.path.normpath(os.path.join(
+                os.path.dirname(os.path.abspath(cfg_path)), raw))
         # 没有配置文件上下文（裸调 prepare）：只能退回代码目录。
         # 这里不产生任何文件系统副作用，真正的写入发生在起服务之后。
-        cfg["user_state_path"] = abs_from_base(_raw_state_path)
-    # ★ 通知 userstate 模块实际该读写哪个文件。走这种「单向下发」而不是
-    # 让 userstate 反过来 import config，是为了避开两个模块的循环导入。
+        return abs_from_base(raw)
+
+    cfg["user_state_path"] = _resolve_under_config(
+        cfg.get("user_state_path"), DEFAULT_CONFIG["user_state_path"])
+    cfg["desktop_shortcuts_path"] = _resolve_under_config(
+        cfg.get("desktop_shortcuts_path"), DEFAULT_CONFIG["desktop_shortcuts_path"])
+
+    # ★ 通知这两个模块实际该读写哪个文件。走这种「单向下发」而不是让它们
+    # 反过来 import config，是为了避开两个模块的循环导入。
     try:
         from . import userstate as userstate_module
 
         userstate_module.ACTIVE_PATH = cfg["user_state_path"]
     except Exception:  # noqa: BLE001 - 下发失败时 userstate 会用自己的默认路径
+        pass
+    try:
+        from . import shortcuts as shortcuts_module
+
+        shortcuts_module.set_path(cfg["desktop_shortcuts_path"])
+    except Exception:  # noqa: BLE001 - 下发失败时 shortcuts 会用自己的默认路径
         pass
 
     upload = cfg.setdefault("upload", {})
