@@ -32,7 +32,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from .. import shortcuts, userstate
-from ..deps import get_state, get_user
+from ..deps import get_state, get_user, resolver_of
 from ..security import PathSecurityError
 
 router = APIRouter(prefix="/api/desktop", tags=["虚拟桌面"])
@@ -78,7 +78,7 @@ async def list_shortcuts(request: Request) -> Dict[str, Any]:
     for item in items:
         entry = dict(item)
         try:
-            _root, abs_path = state.resolver.resolve(item["root"], item["path"])
+            _root, abs_path = resolver_of(request).resolve(item["root"], item["path"])
             entry["exists"] = os.path.exists(abs_path)
             entry["abs"] = abs_path
         except PathSecurityError:
@@ -101,7 +101,7 @@ async def create_shortcut(request: Request, payload: ShortcutPayload) -> Dict[st
     state = get_state(request)
 
     try:
-        root_cfg, abs_path = state.resolver.resolve(payload.root, payload.path)
+        root_cfg, abs_path = resolver_of(request).resolve(payload.root, payload.path)
     except PathSecurityError as exc:
         raise HTTPException(status_code=403, detail=str(exc))
 
@@ -115,7 +115,7 @@ async def create_shortcut(request: Request, payload: ShortcutPayload) -> Dict[st
         item = shortcuts.add(
             name=name,
             root=root_cfg["id"],
-            rel=state.resolver.to_rel(root_cfg, abs_path),
+            rel=resolver_of(request).to_rel(root_cfg, abs_path),
             is_dir=os.path.isdir(abs_path),
         )
     except ValueError as exc:

@@ -28,7 +28,7 @@ from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
 from .. import fsops, office, thumbs
-from ..deps import get_state
+from ..deps import get_state, resolver_of
 from ..http_utils import file_response
 from ..security import PathSecurityError
 # 写权限/受保护路径的判定复用 fs.py 里那一对守卫，而不是在这里再抄一份。
@@ -122,7 +122,7 @@ def _resolve_file(request: Request, root: str, path: str, must_dir: bool = False
     state = get_state(request)
 
     try:
-        root_cfg, abs_path = state.resolver.resolve(root, path)
+        root_cfg, abs_path = resolver_of(request).resolve(root, path)
     except PathSecurityError as exc:
         raise HTTPException(status_code=403, detail=str(exc))
 
@@ -740,7 +740,7 @@ async def office_preview(request: Request, root: str = "", path: str = ""):
     mode = result.get("mode")
 
     if mode == "pdf":
-        rel = state.resolver.to_rel(root_cfg, abs_path)
+        rel = resolver_of(request).to_rel(root_cfg, abs_path)
         return {
             "ok": True,
             "mode": "pdf",

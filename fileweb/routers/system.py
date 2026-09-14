@@ -28,7 +28,7 @@ from starlette.concurrency import run_in_threadpool
 
 from .. import APP_NAME, __version__
 from ..config import BASE_DIR
-from ..deps import get_state, local_ip_addresses
+from ..deps import get_state, local_ip_addresses, resolver_of
 from ..office import find_soffice, reset_soffice_cache
 
 router = APIRouter(prefix="/api/system", tags=["系统"])
@@ -90,7 +90,7 @@ async def system_info(request: Request) -> Dict[str, Any]:
         "user": {
             "username": auth_cfg.get("username") or "admin",
         },
-        "roots": state.resolver.public_list(),
+        "roots": resolver_of(request).public_list(),
         "ui": {
             "wallpaper": ui_cfg.get("wallpaper") or "",
             "default_view": ui_cfg.get("default_view") or "icons",

@@ -100,7 +100,7 @@ from typing import Any, Dict, Optional
 from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 
-from ..deps import SESSION_COOKIE, client_ip, get_state
+from ..deps import SESSION_COOKIE, client_ip, get_state, resolver_of
 from ..terminal import (
     SessionGone,
     SessionReplaced,
@@ -164,13 +164,16 @@ def _is_enabled(tcfg: Dict[str, Any]) -> bool:
     return bool(tcfg.get("enabled", True))
 
 
-def _resolve_start_dir(state, tcfg: Dict[str, Any]) -> str:
+def _resolve_start_dir(resolver, tcfg: Dict[str, Any]) -> str:
     """
     决定 shell 的启动目录。
 
-    优先用配置里的 terminal.start_dir；它为空或不存在时，退到第一个
-    可访问的根目录（用户看到的「此电脑」第一个位置），
-    这样新开的命令行就落在用户熟悉的地方，而不是服务的安装目录。
+    优先用配置里的 terminal.start_dir；它为空或不存在时，退到**该用户**第一个
+    可访问的根目录（也就是他「此电脑」里的第一个位置），这样新开的命令行就落在
+    他熟悉的地方，而不是服务的安装目录。
+
+    这里接收 resolver 而不是 state：多用户下解析器是**按用户**的，
+    而本函数没有 request 可用来取当前用户（调用方负责传进来）。
     """
     configured = str(tcfg.get("start_dir") or "").strip()
     if configured:
@@ -182,7 +185,7 @@ def _resolve_start_dir(state, tcfg: Dict[str, Any]) -> str:
             pass
 
     try:
-        first = state.resolver.first()
+        first = resolver.first()
         if first and os.path.isdir(first["path"]):
             return first["path"]
     except Exception:  # noqa: BLE001
@@ -226,7 +229,7 @@ async def create_session(request: Request, payload: Optional[SessionPayload] = N
         )
 
     shell = str(tcfg.get("shell") or "cmd.exe")
-    start_dir = _resolve_start_dir(state, tcfg)
+    start_dir = _resolve_start_dir(resolver_of(request), tcfg)
     idle_timeout = int(tcfg.get("idle_timeout_seconds") or 0)
     max_sessions = int(tcfg.get("max_sessions") or 4)
     # 会话自己保留多少输出。★ 会话可分离之后这个值的作用从「浏览器侧裁剪」

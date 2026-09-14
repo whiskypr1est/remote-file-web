@@ -514,9 +514,18 @@ class PathResolver:
     def resolve(self, root_id: Optional[str], rel: Optional[str]) -> Tuple[Dict[str, Any], str]:
         """
         「根标识 + 相对路径」-> (根配置, 绝对路径)。
-        不传 root_id 时默认落到第一个根目录。
+        不传 root_id 时默认落到第一个根目录；传了但查不到则直接报错。
         """
-        root = self.get(root_id) or self.first()
+        # ★ root_id 给了但查不到时必须报错，绝不能退回第一个根目录。
+        # 改造前这里是 `self.get(root_id) or self.first()`，单用户时看不出问题；
+        # 多用户下「拿着别人的根标识来访问」正好会走到这里，静默退回自己的根
+        # 会让调用方以为操作成功了，页面显示的还是另一个目录，纯坑。
+        if root_id:
+            root = self.get(root_id)
+            if root is None:
+                raise PathSecurityError("没有这个可访问的根目录：%s" % root_id)
+        else:
+            root = self.first()
         if root is None:
             raise PathSecurityError("未配置任何可访问的根目录")
         abs_path = join_within_root(root["path"], rel or "")

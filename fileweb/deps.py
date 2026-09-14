@@ -77,6 +77,17 @@ class AppState:
 
         self.zip_temp_dir = os.path.join(base_dir, ZIP_TEMP_DIRNAME)
 
+        # ---- 多用户：按用户缓存的路径解析器 ----
+        # 键里带上 roots 指纹，所以改了可见目录自然会拿到新的解析器，
+        # 不需要额外的失效通知，也就不会出现「权限改了、缓存还是旧的」。
+        self._user_resolvers: Dict[Any, PathResolver] = {}
+        # 一个「什么都看不到」的解析器，给**没有分配任何根的子用户**用。
+        # ★ 必须与管理员严格区分：管理员 roots 为空 = 走 mount_all_drives 看全机
+        #   （改造前的历史行为）；子用户 roots 为空 = 什么都没有。弄反就是提权。
+        self._empty_resolver = PathResolver(
+            [], auto_drives=False,
+            include_network_drives=False, include_removable_drives=False)
+
     # -- 路径解析 -----------------------------------------------------------
 
     @staticmethod
@@ -100,6 +111,49 @@ class AppState:
         """配置变更后重建解析器（例如换了壁纸，或插入了新磁盘）。"""
         with self._lock:
             self.resolver = self._build_resolver(self.cfg)
+            # 按用户缓存的那批也要丢掉（管理员那条路径与主 resolver 同源）
+            self._user_resolvers.clear()
+
+    def resolver_for(self, user: Optional[Dict[str, Any]]) -> PathResolver:
+        """
+        取**该用户**可见的路径解析器 —— 多用户改造的核心。
+
+        规则：
+          * 管理员 roots 为空 → 走配置里的 mount_all_drives，也就是全机，
+            与改造前的行为完全一致；
+          * 子用户走自己被分配的那些根（**不挂任何磁盘**），
+            其中标了 readonly 的根只能读；
+          * 子用户一个根都没分到 → 返回「空世界」，**绝不给全机**。
+
+        按 roots 指纹缓存：改了可见目录会得到一个新的键，所以不存在
+        「权限改了、缓存还是旧的」；而 PathResolver 在 mount_all_drives 下
+        要枚举磁盘，也不能每个请求都重建一次。
+        """
+        account = user or {}
+        roots = account.get("roots") or []
+        is_admin = str(account.get("role") or "") == "admin"
+
+        if not roots:
+            # 见 __init__ 里的注释：这两条必须分清，弄反就是提权
+            return self.resolver if is_admin else self._empty_resolver
+
+        fingerprint = (
+            str(account.get("username") or ""),
+            tuple((str(r.get("id") or ""), str(r.get("path") or ""),
+                   bool(r.get("readonly"))) for r in roots),
+        )
+
+        with self._lock:
+            cached = self._user_resolvers.get(fingerprint)
+            if cached is None:
+                cached = PathResolver(
+                    [dict(r) for r in roots],
+                    auto_drives=False,          # ★ 子用户不挂全盘
+                    include_network_drives=False,
+                    include_removable_drives=False,
+                )
+                self._user_resolvers[fingerprint] = cached
+            return cached
 
     def persist(self) -> None:
         """把当前配置写回 config.json。"""
@@ -216,8 +270,19 @@ def get_cfg(request: Request) -> Dict[str, Any]:
 
 
 def get_resolver(request: Request) -> PathResolver:
-    """取路径解析器。"""
-    return get_state(request).resolver
+    """
+    取**当前登录用户**可见的路径解析器。
+
+    多用户改造后它不再是「进程级那一个」：管理员拿到全机，子用户拿到
+    他被分配的根。文件相关路由都应经这里取解析器，别直接摸
+    `state.resolver`（那是管理员/启动时那份）。
+    """
+    return resolver_of(request)
+
+
+def resolver_of(request: Request) -> PathResolver:
+    """取当前登录用户的路径解析器（未登录会 401）。"""
+    return get_state(request).resolver_for(get_user(request))
 
 
 def get_user(request: Request) -> Dict[str, Any]:

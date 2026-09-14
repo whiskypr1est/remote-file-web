@@ -45,7 +45,7 @@ from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
 from .. import archive, fsops, jobs
-from ..deps import get_state
+from ..deps import get_state, resolver_of
 from ..http_utils import file_response
 from ..security import PathSecurityError, is_blocked_extension, is_protected, is_within
 
@@ -214,7 +214,7 @@ async def list_roots(request: Request) -> Dict[str, Any]:
     state = get_state(request)
 
     roots = []
-    for root in state.resolver.roots:
+    for root in resolver_of(request).roots:
         payload = _root_payload(root)
         payload["disk"] = _disk_usage(root["path"]) if payload["exists"] else {}
         roots.append(payload)
@@ -253,12 +253,12 @@ async def search_files(request: Request, q: str = "", root: str = "",
 
     if root:
         try:
-            root_cfg, _abs = _resolve(state.resolver, root, "")
+            root_cfg, _abs = _resolve(resolver_of(request), root, "")
         except Exception as exc:  # noqa: BLE001
             raise _translate_error(exc)
         targets = [root_cfg]
     else:
-        targets = list(state.resolver.roots)
+        targets = list(resolver_of(request).roots)
 
     wanted = int(limit) if limit and limit > 0 else _int_setting(
         "max_results", fsops.DEFAULT_SEARCH_RESULTS)
@@ -298,7 +298,7 @@ async def list_directory(
     """
     state = get_state(request)
     cfg = state.cfg
-    resolver = state.resolver
+    resolver = resolver_of(request)
 
     try:
         root_cfg, abs_path = _resolve(resolver, root, path)
@@ -408,7 +408,7 @@ async def make_directory(request: Request, payload: MkdirPayload) -> Dict[str, A
     state = get_state(request)
 
     try:
-        root_cfg, abs_path = _resolve(state.resolver, payload.root, payload.path)
+        root_cfg, abs_path = _resolve(resolver_of(request), payload.root, payload.path)
         _ensure_writable(root_cfg)
 
         if not os.path.isdir(abs_path):
@@ -420,7 +420,7 @@ async def make_directory(request: Request, payload: MkdirPayload) -> Dict[str, A
     except Exception as exc:  # noqa: BLE001
         raise _translate_error(exc)
 
-    rel = state.resolver.to_rel(root_cfg, new_path)
+    rel = resolver_of(request).to_rel(root_cfg, new_path)
     return {"ok": True, "message": "文件夹已创建", "rel": rel, "name": os.path.basename(new_path)}
 
 
@@ -438,7 +438,7 @@ async def make_file(request: Request, payload: NewFilePayload) -> Dict[str, Any]
     state = get_state(request)
 
     try:
-        root_cfg, abs_path = _resolve(state.resolver, payload.root, payload.path)
+        root_cfg, abs_path = _resolve(resolver_of(request), payload.root, payload.path)
         _ensure_writable(root_cfg)
 
         if not os.path.isdir(abs_path):
@@ -458,7 +458,7 @@ async def make_file(request: Request, payload: NewFilePayload) -> Dict[str, Any]
     except Exception as exc:  # noqa: BLE001
         raise _translate_error(exc)
 
-    rel = state.resolver.to_rel(root_cfg, new_path)
+    rel = resolver_of(request).to_rel(root_cfg, new_path)
     return {"ok": True, "message": "文件已创建", "rel": rel, "name": os.path.basename(new_path)}
 
 
@@ -468,7 +468,7 @@ async def rename_entry(request: Request, payload: RenamePayload) -> Dict[str, An
     state = get_state(request)
 
     try:
-        root_cfg, abs_path = _resolve(state.resolver, payload.root, payload.path)
+        root_cfg, abs_path = _resolve(resolver_of(request), payload.root, payload.path)
         _ensure_writable(root_cfg)
 
         if not os.path.exists(abs_path):
@@ -481,7 +481,7 @@ async def rename_entry(request: Request, payload: RenamePayload) -> Dict[str, An
     except Exception as exc:  # noqa: BLE001
         raise _translate_error(exc)
 
-    rel = state.resolver.to_rel(root_cfg, new_path)
+    rel = resolver_of(request).to_rel(root_cfg, new_path)
     return {"ok": True, "message": "重命名成功", "rel": rel, "name": os.path.basename(new_path)}
 
 
@@ -500,12 +500,12 @@ async def delete_entries(request: Request, payload: DeletePayload) -> Dict[str, 
         raise HTTPException(status_code=400, detail="没有选择任何文件")
 
     try:
-        root_cfg, _base = _resolve(state.resolver, payload.root, "")
+        root_cfg, _base = _resolve(resolver_of(request), payload.root, "")
         _ensure_writable(root_cfg)
 
         abs_paths: List[str] = []
         for rel in payload.paths:
-            _r, abs_path = state.resolver.resolve(root_cfg["id"], rel)
+            _r, abs_path = resolver_of(request).resolve(root_cfg["id"], rel)
             if not os.path.exists(abs_path):
                 raise FileNotFoundError("对象不存在：%s" % rel)
             # 受保护的系统目录只允许浏览，不允许删除
@@ -653,18 +653,18 @@ async def _transfer_entries(request: Request, payload: TransferPayload, move: bo
 
     try:
         # 目标目录：先确认可写、不在保护名单里、确实是一个目录
-        target_root_cfg, dst_dir = _resolve(state.resolver, payload.target_root, payload.target_path)
+        target_root_cfg, dst_dir = _resolve(resolver_of(request), payload.target_root, payload.target_path)
         _ensure_writable(target_root_cfg)
         if not os.path.isdir(dst_dir):
             raise HTTPException(status_code=400, detail="目标位置不是一个有效目录")
         _ensure_not_protected(state.cfg, dst_dir)
 
         # 源与目标允许属于不同的根目录（跨盘复制 / 移动）
-        root_cfg, _base = _resolve(state.resolver, payload.root, "")
+        root_cfg, _base = _resolve(resolver_of(request), payload.root, "")
 
         sources: List[str] = []
         for rel in payload.paths:
-            _r, src_abs = state.resolver.resolve(root_cfg["id"], rel)
+            _r, src_abs = resolver_of(request).resolve(root_cfg["id"], rel)
             if not os.path.exists(src_abs):
                 raise FileNotFoundError("对象不存在：%s" % rel)
 
@@ -868,7 +868,7 @@ async def upload_file(
         pass
 
     try:
-        root_cfg, directory = _resolve(state.resolver, root, path)
+        root_cfg, directory = _resolve(resolver_of(request), root, path)
         _ensure_writable(root_cfg)
 
         if not os.path.isdir(directory):
@@ -930,7 +930,7 @@ async def upload_file(
         _cleanup_part(part_path)
         raise _translate_error(exc)
 
-    rel = state.resolver.to_rel(root_cfg, target)
+    rel = resolver_of(request).to_rel(root_cfg, target)
     final_name = os.path.basename(target)
 
     return {
@@ -975,14 +975,14 @@ async def make_zip(request: Request, payload: ZipPayload) -> Dict[str, Any]:
         raise HTTPException(status_code=400, detail="一次最多打包 %d 项" % MAX_ZIP_ITEMS)
 
     try:
-        root_cfg, _base = _resolve(state.resolver, payload.root, "")
+        root_cfg, _base = _resolve(resolver_of(request), payload.root, "")
 
         items: List[Tuple[str, str]] = []
         total_size = 0
         used_names: Dict[str, int] = {}
 
         for rel in payload.paths:
-            _r, abs_path = state.resolver.resolve(root_cfg["id"], rel)
+            _r, abs_path = resolver_of(request).resolve(root_cfg["id"], rel)
             if not os.path.exists(abs_path):
                 continue
 
@@ -1264,7 +1264,7 @@ async def compress_entries(request: Request, payload: CompressPayload) -> Dict[s
         raise HTTPException(status_code=400, detail="请先选择要压缩的文件或文件夹")
 
     try:
-        root_cfg, _first_dir = _resolve(state.resolver, payload.root, payload.paths[0])
+        root_cfg, _first_dir = _resolve(resolver_of(request), payload.root, payload.paths[0])
     except Exception as exc:  # noqa: BLE001
         raise _translate_error(exc)
 
@@ -1272,7 +1272,7 @@ async def compress_entries(request: Request, payload: CompressPayload) -> Dict[s
 
     sources: List[str] = []
     for rel in payload.paths:
-        _rc, abs_path = _resolve(state.resolver, payload.root, rel)
+        _rc, abs_path = _resolve(resolver_of(request), payload.root, rel)
         if not os.path.exists(abs_path):
             raise HTTPException(status_code=404, detail="文件不存在：%s" % rel)
         # 这里**故意不做**受保护路径检查：压缩只是「读」源文件，
@@ -1292,7 +1292,7 @@ async def compress_entries(request: Request, payload: CompressPayload) -> Dict[s
     # 目标目录：没指定就放在第一个源的同级目录
     if payload.target_root or payload.target_path:
         dest_root_cfg, dest_dir = _resolve(
-            state.resolver, payload.target_root, payload.target_path)
+            resolver_of(request), payload.target_root, payload.target_path)
     else:
         dest_root_cfg = root_cfg
         dest_dir = os.path.dirname(sources[0])
@@ -1356,7 +1356,7 @@ async def archive_listing(request: Request, root: str = "", path: str = "",
         raise HTTPException(status_code=400, detail="请先选择要查看的压缩包")
 
     try:
-        _root_cfg, archive_path = _resolve(state.resolver, root, path)
+        _root_cfg, archive_path = _resolve(resolver_of(request), root, path)
     except Exception as exc:  # noqa: BLE001
         raise _translate_error(exc)
 
@@ -1422,7 +1422,7 @@ async def extract_archive(request: Request, payload: ExtractPayload) -> Dict[str
         raise HTTPException(status_code=400, detail="请先选择要解压的压缩包")
 
     try:
-        root_cfg, archive_path = _resolve(state.resolver, payload.root, payload.path)
+        root_cfg, archive_path = _resolve(resolver_of(request), payload.root, payload.path)
     except Exception as exc:  # noqa: BLE001
         raise _translate_error(exc)
 
@@ -1439,7 +1439,7 @@ async def extract_archive(request: Request, payload: ExtractPayload) -> Dict[str
     # 解压也是「写入」，目标目录必须可写
     if payload.target_root or payload.target_path:
         dest_root_cfg, dest_dir = _resolve(
-            state.resolver, payload.target_root, payload.target_path)
+            resolver_of(request), payload.target_root, payload.target_path)
     else:
         dest_root_cfg = root_cfg
         dest_dir = os.path.dirname(archive_path)
