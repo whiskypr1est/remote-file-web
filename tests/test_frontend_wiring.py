@@ -186,6 +186,61 @@ class FrontendCrossModuleCallTests(unittest.TestCase):
                         missing.append("%s:%d -> %s" % (name, lineno, spec))
         self.assertEqual(missing, [], "相对导入指向了不存在的文件：\n  " + "\n  ".join(missing))
 
+    def test_dom_lookup_maps_only_use_defined_keys(self):
+        """
+        ★ 窗口类里 `this.$ = { 名字: querySelector(...) }` 这张表，
+        用到的每个键都必须在表里定义过。
+
+        这条是补一个**真实出过的 bug**：音乐播放器里表定义的是 `listHead`，
+        而 renderList() 写的是 `this.$.listTitle` —— 于是
+        `this.$.listTitle` 是 **undefined**（注意不是 null），
+        赋值 .textContent 当场抛
+        「Cannot set properties of undefined (setting 'textContent')」，
+        而且它在 renderList 的**第一行**，后面 `innerHTML` 那行根本执行不到，
+        用户看到的只是「导入了歌但列表是空的」。
+
+        为什么原来的闸门没拦住：node --check 只查语法；上面的三条只查
+        `api.xxx` / `ui.xxx` / `wm.xxx` 这种跨模块成员访问，
+        而 `this.$.xxx` 是**同一个文件内部**的名字，谁都没管。
+        这类名字写错不会在加载时报错，只在跑到那一行时才炸 ——
+        正是最该用静态检查挡住的那种。
+        """
+        offenders = []
+        for name in _js_files():
+            src = _read(name)
+            match = re.search(r"this\.\$ = \{(.*?)\n\s*\};", src, re.S)
+            if not match:
+                continue
+            defined = set(re.findall(r"(\w+)\s*:\s*this\.root\.querySelector", match.group(1)))
+            used = set(re.findall(r"this\.\$\.(\w+)", src))
+            for key in sorted(used - defined):
+                offenders.append("%s 用了 this.$.%s，但它不在 this.$ 映射里"
+                                 % (name, key))
+        self.assertEqual(offenders, [],
+                         "DOM 查找表里没有这个键（运行时会是 undefined）：\n  "
+                         + "\n  ".join(offenders))
+
+    def test_dollar_map_entries_are_all_used(self):
+        """
+        反向检查：表里定义了却没人用的键，通常是**改名字时漏改了用法**。
+
+        （比如把 `listTitle` 改名成 `listHead` 却只改了一半 —— 上面那条会红，
+        这条则会在「表里多出一个再也没人用的键」时提醒。）
+        """
+        offenders = []
+        for name in _js_files():
+            src = _read(name)
+            match = re.search(r"this\.\$ = \{(.*?)\n\s*\};", src, re.S)
+            if not match:
+                continue
+            defined = set(re.findall(r"(\w+)\s*:\s*this\.root\.querySelector", match.group(1)))
+            used = set(re.findall(r"this\.\$\.(\w+)", src))
+            for key in sorted(defined - used):
+                offenders.append("%s 的 this.$ 里 `%s` 定义了却没用到" % (name, key))
+        self.assertEqual(offenders, [],
+                         "DOM 查找表里有没人用的键（可能改名漏改）：\n  "
+                         + "\n  ".join(offenders))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
