@@ -24,20 +24,17 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
+from .. import users
 from ..deps import (
     SESSION_COOKIE,
     client_ip,
     get_state,
+    get_user,
     read_session,
+    resolve_session_user,
     session_max_age,
 )
-from ..security import (
-    csrf_token_for,
-    hash_password,
-    random_secret,
-    sign_token,
-    verify_password,
-)
+from ..security import csrf_token_for, sign_token
 
 router = APIRouter(prefix="/api/auth", tags=["认证"])
 
@@ -61,37 +58,9 @@ def _safe_equals(left: str, right: str) -> bool:
         return False
 
 
-def _verify_credentials(cfg: Dict[str, Any], username: str, password: str) -> bool:
-    """
-    校验账号口令。
-
-    支持两种配置：
-      1. auth.password_hash —— PBKDF2 哈希（推荐，配置文件里看不到明文）
-      2. auth.password      —— 明文（兼容用，启动时会高亮警告）
-    """
-    auth = cfg.get("auth") or {}
-
-    expected_user = str(auth.get("username") or "admin")
-    user_ok = _safe_equals(username or "", expected_user)
-
-    password_hash = str(auth.get("password_hash") or "")
-    if password_hash:
-        # 注意：即使用户名不对也要走一遍口令校验，让耗时保持稳定
-        password_ok = verify_password(password or "", password_hash)
-        return user_ok and password_ok
-
-    plain = str(auth.get("password") or "")
-    if plain:
-        password_ok = _safe_equals(password or "", plain)
-        return user_ok and password_ok
-
-    # 两种都没配置：拒绝一切登录，避免出现「无密码可进」的危险状态
-    return False
-
-
 @router.post("/login")
 async def login(request: Request, payload: LoginPayload) -> JSONResponse:
-    """账号口令登录。"""
+    """账号口令登录（多用户：查用户表）。"""
     state = get_state(request)
     cfg = state.cfg
     auth = cfg.get("auth") or {}
@@ -106,8 +75,11 @@ async def login(request: Request, payload: LoginPayload) -> JSONResponse:
             detail="登录失败次数过多，请在 %d 秒后重试" % locked_seconds,
         )
 
-    # 2) 校验账号口令
-    if not _verify_credentials(cfg, payload.username, payload.password):
+    # 2) 校验账号口令。
+    #    ★ 用户表是唯一事实来源：config.json 的 auth 段只在「首次引导」时
+    #      用来派生管理员（见 users.ensure_bootstrap），之后不再参与登录。
+    account, reason = users.authenticate(payload.username, payload.password)
+    if account is None:
         remaining = state.register_login_failure(
             ip,
             int(auth.get("max_login_fails") or 5),
@@ -118,25 +90,39 @@ async def login(request: Request, payload: LoginPayload) -> JSONResponse:
                 status_code=429,
                 detail="登录失败次数过多，账号已临时锁定，请稍后再试",
             )
+        # reason 由 users.authenticate 给出：口令错 / 账号停用 / 没设密码
+        # 各有各的说法，比笼统一句「用户名或密码错误」更好排查。
         raise HTTPException(
             status_code=401,
-            detail="用户名或密码错误（还可尝试 %d 次）" % remaining,
+            detail="%s（还可尝试 %d 次）" % (reason, remaining),
         )
 
     # 3) 登录成功
     state.clear_login_failures(ip)
+    users.record_login(account["username"])
 
     secret = str(auth.get("session_secret") or "")
     max_age = session_max_age(cfg)
     now = int(time.time())
     token = sign_token(
-        {"u": str(auth.get("username") or "admin"), "iat": now, "exp": now + max_age},
+        {
+            "u": account["username"],
+            # ★ 令牌版本。改密码 / 停用 / 强制下线都会把它 +1，
+            #   于是旧令牌在中间件里立刻被判为失效 —— 这就是「按用户踢下线」。
+            #   （全局轮换 session_secret 也能踢人，但会把所有人一起踢掉，
+            #     多用户下不可用。）
+            "v": int(account.get("token_version") or 1),
+            "iat": now,
+            "exp": now + max_age,
+        },
         secret,
     )
 
     response = JSONResponse({
         "ok": True,
-        "username": str(auth.get("username") or "admin"),
+        "username": account["username"],
+        "display_name": account.get("display_name") or account["username"],
+        "role": account.get("role") or "user",
         # 前端后续所有改状态请求都要带上这个头
         "csrf_token": csrf_token_for(token, secret),
         "expires_in": max_age,
@@ -178,17 +164,22 @@ async def change_password(request: Request, payload: PasswordPayload) -> Dict[st
     2. **复用登录那套失败锁定。** 当前口令同样可以被暴力猜；如果这里不限次数，
        登录页的锁定就形同虚设 —— 绕过它只需要先有一个会话。
 
-    3. **成功后轮换 session_secret，让所有已签发的会话立即失效。**
-       这正好补上 README 里「修改密码不会让已登录的浏览器立即掉线」那条已知限制。
-       代价是当前这个会话也会失效，所以响应带 relogin=true，前端据此引导重新登录。
+    3. **改完只让「这一个用户」的旧会话失效。**
+       实现上是递增他的 token_version（中间件随即判旧令牌失效），
+       而**不再**像单用户时代那样轮换全局 session_secret ——
+       那样会把所有用户一起踢下线，多用户下不可用。
+       响应带 relogin=true，前端据此引导他重新登录。
 
-    4. **顺手清掉明文兼容项 auth.password。** 它的优先级低于哈希，但只要留着，
-       旧口令就仍然能登录 —— 「改了密码却改不掉旧密码」是最容易被忽略的漏洞。
+    4. **写的是用户表，不是 config.json。** 多用户下 `users.json` 才是唯一的
+       用户事实来源；config 的 auth 段只在首次引导时被用过一次。
+       （顺带也就不会再碰到「明文兼容项 auth.password 留着、旧口令仍可登录」
+       那个坑：用户表里根本不存在明文字段。）
     """
     state = get_state(request)
     cfg = state.cfg
     auth = cfg.get("auth") or {}
     ip = client_ip(request)
+    account = get_user(request)          # 当前登录用户
 
     # 1) 是否处于锁定期（与登录共用同一份失败计数）
     locked_seconds = state.login_locked_seconds(ip)
@@ -198,9 +189,10 @@ async def change_password(request: Request, payload: PasswordPayload) -> Dict[st
             detail="尝试次数过多，请在 %d 秒后重试" % locked_seconds,
         )
 
-    # 2) 校验当前口令
-    username = str(auth.get("username") or "admin")
-    if not _verify_credentials(cfg, username, payload.current_password or ""):
+    # 2) 校验当前口令 —— 对的是**当前用户**的哈希，不再是 config 里那一个
+    checked, reason = users.authenticate(
+        account["username"], payload.current_password or "")
+    if checked is None:
         remaining = state.register_login_failure(
             ip,
             int(auth.get("max_login_fails") or 5),
@@ -213,7 +205,7 @@ async def change_password(request: Request, payload: PasswordPayload) -> Dict[st
             )
         raise HTTPException(
             status_code=403,
-            detail="当前密码不正确（还可尝试 %d 次）" % remaining,
+            detail="%s（还可尝试 %d 次）" % (reason, remaining),
         )
 
     # 3) 校验新口令
@@ -226,19 +218,15 @@ async def change_password(request: Request, payload: PasswordPayload) -> Dict[st
     if _safe_equals(new_password, payload.current_password or ""):
         raise HTTPException(status_code=400, detail="新密码不能与当前密码相同")
 
-    # 4) 落盘：新哈希 + 清掉明文项 + 轮换会话密钥
+    # 4) 写回用户表：set_password 会递增 token_version，
+    #    于是该用户此前签发的所有会话（含他自己的其它浏览器）立即失效。
     state.clear_login_failures(ip)
-
-    auth["password_hash"] = hash_password(new_password)
-    auth["password"] = ""
-    auth["session_secret"] = random_secret(32)
-    cfg["auth"] = auth
-    state.persist()
+    users.set_password(account["username"], new_password)
 
     return {
         "ok": True,
         "message": "密码已修改，请用新密码重新登录",
-        # 会话密钥已轮换 → 当前这个 Cookie 同时也失效了
+        # 该用户自己的其它设备也一并下线
         "relogin": True,
     }
 
@@ -257,20 +245,27 @@ async def status(request: Request) -> Dict[str, Any]:
     查询登录状态。
 
     这个接口是公开的（登录页需要它来判断该显示登录框还是直接进桌面），
-    但只有持有有效会话的请求才会拿到 csrf_token。
+    但只有持有**有效**会话的请求才会拿到 csrf_token。
+
+    也要走 resolve_session_user：否则被停用、或被改过密码的用户，
+    浏览器仍会显示"已登录"，要一直点到某个接口才被 401 打回登录页 ——
+    体验上像是"莫名其妙掉线"，而且登录页的自动跳转逻辑也会判断错。
     """
     state = get_state(request)
     cfg = state.cfg
     auth = cfg.get("auth") or {}
     secret = str(auth.get("session_secret") or "")
 
-    user = read_session(request, secret, session_max_age(cfg))
-    if not user:
+    payload = read_session(request, secret, session_max_age(cfg))
+    account = resolve_session_user(payload) if payload else None
+    if not account:
         return {"authenticated": False, "username": ""}
 
     token = request.cookies.get(SESSION_COOKIE) or ""
     return {
         "authenticated": True,
-        "username": user.get("u") or "",
+        "username": account["username"],
+        "display_name": account.get("display_name") or account["username"],
+        "role": account.get("role") or "user",
         "csrf_token": csrf_token_for(token, secret),
     }

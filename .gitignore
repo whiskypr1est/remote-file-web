@@ -10,6 +10,10 @@
 # ---- 运行时生成，含密钥 / 口令 --------------------------------------------
 config.json
 FIRST_RUN_PASSWORD.txt
+# 用户表（多用户改造后引入）：含**每个用户的口令哈希**，属于部署数据。
+# 服务首次启动时会从 config.json 的 auth 段自动派生管理员并生成它
+# （见 fileweb/users.py 的 ensure_bootstrap），所以既不需要、也绝不能进仓库。
+users.json
 
 # ---- 每台机器 / 每个人各自的状态（属于部署数据，不属于源码）--------------
 user_state.json

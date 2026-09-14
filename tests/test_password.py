@@ -112,59 +112,85 @@ class PasswordChangeSuccessTests(unittest.TestCase):
         }], username=USERNAME, password=OLD_PASSWORD)
         cls.server.start()
 
+        # ★ 口令变更放在 setUpClass 里，让下面每个用例都观察同一个「已改完」的状态。
+        #   放在某个用例里会变成「谁先跑谁负责改」的隐式字母序依赖 ——
+        #   那种测试在别人调换用例顺序后会莫名其妙地红。
+        cls.old_client = cls.server.login_client()
+        cls.change_status, cls.change_data = cls.old_client.json(
+            "POST", "/api/auth/password",
+            {"current_password": OLD_PASSWORD, "new_password": NEW_PASSWORD})
+
     @classmethod
     def tearDownClass(cls):
         cls.server.stop()
         cls.server.cleanup()
 
-    def test_change_succeeds_and_kills_the_old_session(self):
-        client = self.server.login_client()
+    @classmethod
+    def _users_path(cls):
+        """用户表就在测试配置旁边（app 用 cfg._cfg_path 推出来的位置）。"""
+        return os.path.join(os.path.dirname(cls.server.cfg_path), "users.json")
 
-        status, data = client.json("POST", "/api/auth/password",
-                                   {"current_password": OLD_PASSWORD,
-                                    "new_password": NEW_PASSWORD})
-        self.assertEqual(status, 200, data)
-        self.assertTrue(data.get("relogin"), "应当提示前端重新登录：%s" % data)
+    def test_change_succeeded_and_asks_for_relogin(self):
+        self.assertEqual(self.change_status, 200, self.change_data)
+        self.assertTrue(self.change_data.get("relogin"),
+                        "应当提示前端重新登录：%s" % self.change_data)
 
-        # 1) 旧会话（同一个 Cookie）必须已经失效 —— session_secret 被轮换了
-        status, _ = client.json("GET", "/api/system/info")
+    def test_old_session_is_dead_immediately(self):
+        """
+        ★ 改完密码，**同一个 Cookie 立刻失效**。
+
+        多用户后实现机制变了：不再是轮换全局 session_secret（那会踢掉所有人），
+        而是递增该用户的 token_version，中间件比对不上就把旧令牌当失效。
+        """
+        status, _ = self.old_client.json("GET", "/api/system/info")
         self.assertEqual(status, 401, "改完密码后，旧会话应当立即失效")
 
-        # 2) 旧口令不能再登录
-        old_client = self.server.client()
-        status, _ = old_client.login(USERNAME, OLD_PASSWORD)
+    def test_old_password_no_longer_works(self):
+        client = self.server.client()
+        status, _ = client.login(USERNAME, OLD_PASSWORD)
         self.assertEqual(status, 401, "旧密码不该还能登录")
 
-        # 3) 新口令可以登录
-        new_client = self.server.client()
-        status, data = new_client.login(USERNAME, NEW_PASSWORD)
+    def test_new_password_works(self):
+        client = self.server.client()
+        status, data = client.login(USERNAME, NEW_PASSWORD)
         self.assertEqual(status, 200, data)
 
-    def test_persisted_config_has_no_plaintext_and_clears_legacy_field(self):
+    def test_token_version_was_bumped(self):
+        """★ 新机制的判据：该用户的 token_version 被递增（引导时是 1）。"""
+        with open(self._users_path(), encoding="utf-8") as fh:
+            table = json.load(fh)
+
+        record = next(u for u in table["users"] if u["username"] == USERNAME)
+        self.assertGreaterEqual(int(record.get("token_version") or 1), 2,
+                                "改密码应当把 token_version 递增")
+
+    def test_password_lands_in_the_user_table_not_the_config(self):
         """
-        落盘的配置里：必须是哈希、明文兼容项被清空、且找不到新口令的明文。
+        ★ 多用户后口令写在 users.json，不再写 config.json。
 
-        最后那条尤其重要 —— 「改口令」若只写了哈希却没清 auth.password，
-        旧口令会继续有效（校验时明文分支仍在），改密码就成了摆设。
+        `users.json` 才是唯一的用户事实来源；config 的 auth 段只在首次引导时
+        被用过一次（派生管理员）。顺带也就绕开了单用户时代那个坑：
+        「改了口令却没清掉明文兼容项 auth.password，旧口令仍然能登录」——
+        用户表里根本没有明文字段。
         """
-        with open(self.server.cfg_path, encoding="utf-8") as fh:
-            cfg = json.load(fh)
+        with open(self._users_path(), encoding="utf-8") as fh:
+            raw = fh.read()
 
-        auth = cfg.get("auth") or {}
-        self.assertEqual(auth.get("password"), "",
-                         "明文兼容项 auth.password 必须被清空")
-        self.assertTrue(str(auth.get("password_hash") or "").startswith("pbkdf2_sha256$"),
-                        "应当写入 PBKDF2 哈希")
-        self.assertNotIn(NEW_PASSWORD, json.dumps(cfg, ensure_ascii=False),
-                         "配置文件里不该出现新口令的明文")
+        table = json.loads(raw)
+        record = next(u for u in table["users"] if u["username"] == USERNAME)
+        self.assertTrue(str(record.get("password_hash") or "")
+                        .startswith("pbkdf2_sha256$"), "用户表里应当是 PBKDF2 哈希")
+        self.assertNotIn(NEW_PASSWORD, raw, "用户表里不该出现新口令的明文")
 
-    def test_session_secret_was_rotated(self):
-        """会话密钥轮换是「旧会话失效」的实现手段，顺便确认它确实变了。"""
-        self.assertTrue(self.server.cfg_path)
+    def test_global_session_secret_is_not_rotated(self):
+        """
+        全局 session_secret 仍在（签名继续用它），但**不该**被轮换 ——
+        一旦轮换，别的用户也会被一起踢下线，那正是多用户下不能接受的行为。
+        """
         with open(self.server.cfg_path, encoding="utf-8") as fh:
             cfg = json.load(fh)
         self.assertTrue(str((cfg.get("auth") or {}).get("session_secret") or ""),
-                        "session_secret 不该为空")
+                        "session_secret 应当仍然存在（用于签名）")
 
 
 if __name__ == "__main__":

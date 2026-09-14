@@ -44,6 +44,7 @@ from starlette.datastructures import Headers, MutableHeaders
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from fileweb import APP_NAME, __version__, config as config_module
+from fileweb import users as users_module
 from fileweb.deps import (
     PUBLIC_API_PATHS,
     SESSION_COOKIE,
@@ -51,6 +52,7 @@ from fileweb.deps import (
     AppState,
     check_csrf,
     check_origin,
+    resolve_session_user,
     session_max_age,
 )
 from fileweb.http_utils import json_error
@@ -148,8 +150,18 @@ class SecurityMiddleware:
                 await response(scope, receive, send)
                 return
 
-            # 把用户信息挂到 scope["state"]，下游 request.state.user 就能取到
-            scope.setdefault("state", {})["user"] = payload
+            # ★ 令牌里只有 {u, v, iat, exp}，这里换成**用户表里的当前记录**
+            #   （多用户改造）。角色与可见目录实时从用户表读，所以降权、改可见
+            #   目录下一次请求就生效；用户被删、被停用、或 token_version 对不上
+            #   （改过密码 / 被强制下线）都算会话失效。
+            account = resolve_session_user(payload)
+            if account is None:
+                response = json_error("会话已失效，请重新登录", status_code=401, code="unauthorized")
+                await response(scope, receive, send)
+                return
+
+            # 把用户记录挂到 scope["state"]，下游 request.state.user 就能取到
+            scope.setdefault("state", {})["user"] = account
 
             # 改状态请求：校验同源 + CSRF 令牌
             method = (scope.get("method") or "GET").upper()
@@ -253,8 +265,16 @@ class SecurityMiddleware:
             await self._reject_websocket(send)
             return False
 
+        # 与 HTTP 走同一套：令牌 → 用户表里的当前记录。
+        # 这一条对已经建立的 WS 同样有效：被停用或改过密码的人，
+        # 下次重连会被拒（否则"停用"对他手里的终端毫无作用）。
+        account = resolve_session_user(payload)
+        if account is None:
+            await self._reject_websocket(send)
+            return False
+
         scope_state = scope.setdefault("state", {})
-        scope_state["user"] = payload
+        scope_state["user"] = account
         # 供路由做「会话归属」二次校验（见 routers/terminal.py）
         scope_state["session_token"] = token
         return True
@@ -349,6 +369,25 @@ def create_app(cfg=None) -> FastAPI:
         openapi_url=None,
         lifespan=app_lifespan,
     )
+
+    # ---- 多用户：用户表位置 + 首次引导 ----
+    #
+    # 用户表放在**配置文件旁边**：用 --config 起多实例时各存各的，
+    # 这也是测试能安全隔离的前提（不会碰到真实部署的那一份）。
+    # cfg 里的 _cfg_path 是 config.load() 记下来的来源路径 —— 当初正是为了
+    # 「必须写回同一个文件」这类场景才加的（见 config.save 的注释与那起事故）。
+    cfg_path = str(cfg.get("_cfg_path") or "")
+    if cfg_path:
+        users_module.set_path(
+            os.path.join(os.path.dirname(os.path.abspath(cfg_path)), "users.json"))
+
+    # 还没有用户表时，用 config.json 的 auth 段派生管理员：老部署升级上来
+    # 口令继续有效、管理员 roots 为空走 mount_all_drives 仍看全机。
+    _bootstrap = users_module.ensure_bootstrap(cfg)
+    if _bootstrap.get("warning"):
+        print("\n" + "!" * 68)
+        print("[!] " + _bootstrap["warning"])
+        print("!" * 68 + "\n")
 
     # 进程级共享状态
     app.state.app_state = AppState(cfg, BASE_DIR)

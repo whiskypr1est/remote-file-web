@@ -25,6 +25,7 @@ from urllib.parse import urlparse
 
 from fastapi import HTTPException, Request
 
+from . import users
 from .config import save as save_config
 from .security import PathResolver, csrf_token_for, verify_token
 
@@ -221,12 +222,68 @@ def get_resolver(request: Request) -> PathResolver:
 
 def get_user(request: Request) -> Dict[str, Any]:
     """
-    取当前登录用户信息（由认证中间件写入 request.state.user）。
-    这里再做一次兜底判断，防止某个路由被绕过中间件时出现越权。
+    取当前登录用户（由认证中间件写入 request.state.user）。
+
+    拿到的是**完整的用户记录**（username / role / roots / enabled …），
+    不是令牌 payload —— 中间件已经用 resolve_session_user 换成了用户表里
+    的当前记录。这里再做一次兜底判断，防止某个路由被绕过中间件时出现越权。
     """
     user = getattr(request.state, "user", None)
     if not user:
         raise HTTPException(status_code=401, detail="未登录或会话已过期")
+    return user
+
+
+def resolve_session_user(payload: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """
+    把「已验签的令牌 payload」换成**用户表里的当前记录**。
+
+    令牌里只放 `{u, v, iat, exp}`：身份 + 一个版本号。**角色与可见目录一律
+    实时从用户表读** —— 好处是降权、改可见目录、改权限下一次请求就生效，
+    既不要求人重新登录，也不必去遍历或作废已签发的令牌。
+
+    返回 None 表示这个会话应当视为失效，三种情况：
+      * 用户已被删除；
+      * 用户被停用（enabled=false）；
+      * `token_version` 对不上 —— 改过密码、或被管理员强制下线。
+
+    ⚠️ 兼容性：多用户改造**之前**签发的令牌里没有 `v`。这里把缺失当作 1，
+    而引导出来的管理员 token_version 也是 1，所以**升级不会把现有登录踢下线**
+    （这是有意的：不要为了上线多用户而打断正在用的人）。
+    """
+    username = str((payload or {}).get("u") or "").strip()
+    if not username:
+        return None
+
+    record = users.get(username)
+    if record is None:
+        return None
+    if not record.get("enabled", True):
+        return None
+
+    try:
+        token_version = int((payload or {}).get("v") or 1)
+    except (TypeError, ValueError):
+        return None
+
+    if token_version != int(record.get("token_version") or 1):
+        return None
+
+    return record
+
+
+def require_admin(request: Request) -> Dict[str, Any]:
+    """
+    要求当前用户是管理员。
+
+    用于用户管理、在线会话列表、审计日志这类**只有管理员能用**的接口。
+
+    注意这是界面/接口层面的约束：子用户拥有全权限 cmd，所以它不是对抗
+    恶意用户的边界（详见 MULTIUSER.md 第〇节）。
+    """
+    user = get_user(request)
+    if str(user.get("role") or "") != "admin":
+        raise HTTPException(status_code=403, detail="该操作仅限管理员")
     return user
 
 
