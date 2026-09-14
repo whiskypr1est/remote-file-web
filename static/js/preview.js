@@ -125,9 +125,14 @@ function buildImage(container, ctx) {
     separator() +
     downloadButton(ctx) +
     '</div>' +
-    '<div class="pv-body"><div class="image-stage"><img alt="" draggable="false"></div></div>';
+    '<div class="pv-body"><div class="image-stage">' +
+    '<div class="image-rotor"><img alt="" draggable="false"></div>' +
+    '</div></div>';
 
   const stage = container.querySelector('.image-stage');
+  // ★ 旋转用的外层占位容器：图片元素本身只负责「画」，旋转后的**占位尺寸**
+  //   由它承担（详见 apply() 的说明）。
+  const rotor = stage.querySelector('.image-rotor');
   const img = stage.querySelector('img');
   const zoomLabel = container.querySelector('.zoom-label');
   const dimLabel = container.querySelector('.dim-label');
@@ -138,6 +143,7 @@ function buildImage(container, ctx) {
   let naturalW = 0;
   let naturalH = 0;
 
+  /** 旋转 90°/270° 之后，图片在屏幕上占据的宽高（即「显示尺寸」） */
   function displaySize() {
     const swap = Math.abs(rotation % 180) === 90;
     return {
@@ -146,15 +152,56 @@ function buildImage(container, ctx) {
     };
   }
 
+  function updateLabels() {
+    if (!naturalW || !naturalH) {
+      return;
+    }
+    const swapped = Math.abs(rotation % 180) === 90;
+    dimLabel.textContent = swapped
+      // ★ 旋转后把「显示尺寸」也写出来：只写文件本身的尺寸会让人以为
+      //   旋转没生效（400×200 的图转 90° 后文件仍是 400×200，
+      //   但屏幕上应该是 200×400）。
+      ? naturalW + ' × ' + naturalH + ' 像素（显示 ' + naturalH + ' × ' + naturalW + '）'
+      : naturalW + ' × ' + naturalH + ' 像素';
+    zoomLabel.textContent = Math.round(scale * 100) + '%';
+  }
+
+  /**
+   * 把当前 scale / rotation 反映到 DOM 上。
+   *
+   * ★ 这里曾经有一个会让图片「严重畸变」的 bug，改法值得记下来：
+   *
+   *   原实现把**旋转后的尺寸**（400×200 转 90° 就是 200×400）直接写成了
+   *   `<img>` 的 width/height，同时又给它加 `transform: rotate(90deg)`。
+   *   于是同一件事被做了两遍：
+   *     1. img 元素被强行拉成 200×400 —— 而图片内容的原始比例是 2:1，
+   *        填进 1:2 的框里就是**横向压扁、纵向拉长**（用户看到的「畸变严重」）；
+   *     2. 这个已经变形的框再被 transform 转 90°，屏幕上又回到 400×200。
+   *   所以用户看到的现象正是「点了旋转，还是长 400 宽 200，而且严重变形」。
+   *
+   *   正确做法是把两件事分开：
+   *     * `<img>` 永远保持**原始**宽高 × scale（内容绝不被拉伸），
+   *       旋转只由 transform 负责（transform 不改变布局盒子）；
+   *     * 旋转后的占位尺寸交给外层 .image-rotor —— 它决定滚动区域与居中，
+   *       所以大图旋转后仍然能滚到每一个角。
+   */
   function apply() {
     const size = displaySize();
     if (!size.w || !size.h) {
       return;
     }
-    img.style.width = Math.max(1, Math.round(size.w * scale)) + 'px';
-    img.style.height = Math.max(1, Math.round(size.h * scale)) + 'px';
-    img.style.transform = 'rotate(' + rotation + 'deg)';
-    zoomLabel.textContent = Math.round(scale * 100) + '%';
+    const w = Math.max(1, Math.round(naturalW * scale));
+    const h = Math.max(1, Math.round(naturalH * scale));
+
+    img.style.width = w + 'px';
+    img.style.height = h + 'px';
+    // translate 先把图片中心挪到 rotor 中心，再绕自身中心旋转
+    img.style.transform = 'translate(-50%, -50%) rotate(' + rotation + 'deg)';
+
+    rotor.style.width = Math.max(1, Math.round(size.w * scale)) + 'px';
+    rotor.style.height = Math.max(1, Math.round(size.h * scale)) + 'px';
+
+    updateLabels();
   }
 
   function fit() {
@@ -252,7 +299,8 @@ function buildImage(container, ctx) {
   img.addEventListener('load', function () {
     naturalW = img.naturalWidth;
     naturalH = img.naturalHeight;
-    dimLabel.textContent = naturalW + ' × ' + naturalH + ' 像素';
+    // 尺寸标签由 apply() -> updateLabels() 统一维护（旋转时要一起变），
+    // 这里不再单独写，免得两处不一致
     fit();
   });
 

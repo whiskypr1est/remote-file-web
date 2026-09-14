@@ -138,8 +138,6 @@
   background-position: 0 0, 0 8px, 8px -8px, -8px 0;
   background-color: #f7f8f9;
   display: flex;
-  align-items: center;
-  justify-content: center;
   cursor: grab;
 }
 
@@ -147,8 +145,36 @@
   cursor: grabbing;
 }
 
+/*
+ * 旋转占位层。
+ *
+ * ★ 为什么需要它：`transform: rotate()` 只改变「画出来的样子」，
+ *   不改变元素的布局盒子。所以旋转后的图片必须另有一个盒子来占位，
+ *   否则旋转 90° 的大图，滚动区域仍按旋转前的尺寸算 —— 上下两头滚不到；
+ *   而如果反过来把图片元素本身改成旋转后的尺寸，内容又会被拉伸变形
+ *   （这正是此前「旋转后严重畸变」的原因，详见 preview.js 的 apply()）。
+ *
+ * 所以分工是：
+ *   .image-rotor  只负责占位（JS 写它的 width/height = 显示尺寸）
+ *   .image-stage img  只负责画（保持原图比例，旋转交给 transform）
+ */
+.image-rotor {
+  position: relative;
+  flex: 0 0 auto;
+  /* 用 auto 外边距居中，而不是给 stage 加 justify-content: center：
+     用 flex 居中的话，当内容比容器大时左右（上下）会**同时**溢出，
+     而滚动容器滚不到负方向 —— 结果是大图/放大后的左上角永远看不到。
+     auto 外边距在空间不足时会塌成 0，溢出只发生在右下，全部可滚到。 */
+  margin: auto;
+}
+
 .image-stage img {
   display: block;
+  position: absolute;
+  /* 左上角先对齐父盒中心，再由 transform 的 translate(-50%,-50%) 拉回，
+     这样旋转是绕图片自身中心进行的 */
+  left: 50%;
+  top: 50%;
   max-width: none;
   max-height: none;
   transform-origin: center center;
