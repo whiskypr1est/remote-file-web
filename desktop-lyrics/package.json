@@ -27,6 +27,7 @@
       "output": "dist",
       "buildResources": "build"
     },
+    "electronDist": "node_modules/electron/dist",
     "files": [
       "src/**/*",
       "package.json"

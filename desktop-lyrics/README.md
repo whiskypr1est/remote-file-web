@@ -51,16 +51,35 @@ npm run dist:portable     :: 只要便携版（免安装，双击就能跑）
 
 装完一台之后，把安装程序拷到其它机器直接装即可（**不需要**在每台机器上装 Node）。
 
-### 如果 `npm install` 卡住或报错（国内网络）
+### 如果 `npm install` 或 `npm run dist` 卡住/报错（国内网络）
 
-Electron 的**二进制**默认从 GitHub 下载，国内经常连不上（现象是 `npm install`
+**① Electron 的二进制**默认从 GitHub 下载，国内经常连不上（现象是 `npm install`
 看起来成功，但 `npm start` 报 “Electron failed to install correctly”）。
-换国内镜像：
+**② 打包时的 NSIS/签名工具**也从 GitHub 下载，连不上时 `npm run dist` 会卡住。
+两个都换成国内镜像即可（打包与安装各设一次，只对当前窗口有效）：
 
 ```bat
 set ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/
+set ELECTRON_BUILDER_BINARIES_MIRROR=https://npmmirror.com/mirrors/electron-builder-binaries/
 npm install
+npm run dist
 ```
+
+> **③ 如果 `npm run dist` 报 `ENOENT: ... rename 'dist\win-unpacked\electron.exe'`**
+> 说明解压 Electron 压缩包时**漏文件**了（`electron.exe` 没写进去，`win-unpacked`
+> 里只有几十个 dll/pak）。这是解压工具在某些机器上被打断/拦截导致的，跟项目无关。
+> 本项目的 `package.json` 里为此设了：
+>
+> ```json
+> "electronDist": "node_modules/electron/dist"
+> ```
+>
+> 它让 electron-builder **直接从 `node_modules/electron/dist` 拷贝**，而不是自己
+> 再解压一遍 —— 那个目录是 `npm install` 装 electron 时解压好的，内容最全。
+> 所以正常情况下不用管它；万一日后 `npm install` 自己就漏文件了，
+> 用 `python -c "import zipfile;zipfile.ZipFile(r'%LOCALAPPDATA%\electron\Cache\<哈希>\electron-v32.3.3-win32-x64.zip').extractall(r'node_modules\electron\dist')"`
+> 手工补一次即可（压缩包在 `%LOCALAPPDATA%\electron\Cache\` 下）。
+
 
 ---
 
