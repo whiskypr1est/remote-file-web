@@ -87,6 +87,126 @@ def _window_manager_members() -> set:
     return members
 
 
+def _template_html(src: str) -> str:
+    """
+    粗略还原某个窗口类 template() 里拼出来的 HTML 字符串。
+
+    只为「选择器里的 class 在不在模板里」这一件事服务，所以不追求精确：
+    把 `return [ ... ].join('')` 之间的单引号字符串按顺序拼起来即可
+    （`icon('x')` 这类调用不是字符串，会被自然忽略）。
+    """
+    match = re.search(r"template\(\)\s*\{(.*?)\n  \}", src, re.S)
+    if not match:
+        return ""
+    body = match.group(1)
+    start = body.find("return [")
+    end = body.find("].join('')", start)
+    if start < 0 or end < 0:
+        return ""
+    return "".join(re.findall(r"'([^']*)'", body[start:end]))
+
+
+def _class_names(src: str) -> set:
+    """
+    源码里出现过的全部 class 名。
+
+    扫的是整个文件（不只是 template()）：模板里写死的、渲染函数里拼出来的
+    HTML 字符串里都算 —— 两者都是带 `class="..."` 的 JS 字符串。
+    按空白拆开，所以 `class="ms-time ms-duration"` 会贡献两个名字。
+    """
+    names = set()
+    for value in re.findall(r'class="([^"]*)"', src):
+        for piece in value.split():
+            names.add(piece)
+    return names
+
+
+class FrontendDomLookupTests(unittest.TestCase):
+    """
+    ★ 窗口类里的 DOM 查找必须真的能找到东西。
+
+    这一组是补一个**真实出过的 bug**（用户报的「导入了歌但列表空白」）：
+    music.js 的 `this.$` 表定义的是 `listHead`，而 renderList() 写的是
+    `this.$.listTitle` —— 键不存在 → undefined → 赋值 .textContent 当场抛
+    「Cannot set properties of undefined (setting 'textContent')」，
+    而它在 renderList 的**第一行**，后面的 innerHTML 根本执行不到。
+
+    为什么原来的闸门没拦住：`node --check` 只查语法（键名写错是合法语法），
+    而 test_frontend_wiring 只管**跨模块**成员（api./ui./wm.）——
+    `this.$.xxx` 与选择器字符串都是**同一个文件内部**的事，谁都没管。
+    这类错误不会在加载时暴露，只在跑到那一行时才炸，正是最该静态挡住的。
+    """
+
+    def test_dom_lookup_maps_only_use_defined_keys(self):
+        """`this.$.xxx` 用到的每个键，都必须在 `this.$ = {...}` 里定义过。"""
+        offenders = []
+        for name in _js_files():
+            src = _read(name)
+            match = re.search(r"this\.\$ = \{(.*?)\n\s*\};", src, re.S)
+            if not match:
+                continue
+            defined = set(re.findall(r"(\w+)\s*:\s*this\.root\.querySelector", match.group(1)))
+            used = set(re.findall(r"this\.\$\.(\w+)", src))
+            for key in sorted(used - defined):
+                offenders.append("%s 用了 this.$.%s，但它不在 this.$ 映射里"
+                                 % (name, key))
+        self.assertEqual(offenders, [],
+                         "DOM 查找表里没有这个键（运行时会是 undefined）：\n  "
+                         + "\n  ".join(offenders))
+
+    def test_dollar_map_entries_are_all_used(self):
+        """反向：表里定义了却没人用的键，通常意味着改名只改了一半。"""
+        offenders = []
+        for name in _js_files():
+            src = _read(name)
+            match = re.search(r"this\.\$ = \{(.*?)\n\s*\};", src, re.S)
+            if not match:
+                continue
+            defined = set(re.findall(r"(\w+)\s*:\s*this\.root\.querySelector", match.group(1)))
+            used = set(re.findall(r"this\.\$\.(\w+)", src))
+            for key in sorted(defined - used):
+                offenders.append("%s 的 this.$ 里 `%s` 定义了却没用到" % (name, key))
+        self.assertEqual(offenders, [],
+                         "DOM 查找表里有没人用的键（可能改名漏改）：\n  "
+                         + "\n  ".join(offenders))
+
+    def test_class_selectors_exist_in_the_template(self):
+        """
+        `querySelector('.ms-xxx')` 里的 class，必须在**同一个文件里**被用过
+        （模板里写死的、或渲染函数里拼出来的都算）。
+
+        写错的后果和上面那条一样（拿到 null 再赋值就抛），
+        而且同样只在运行到那一行时才暴露。
+
+        ★ 为什么是「本文件里出现过」而不是「模板里出现过」：
+          表格行、任务管理器的卡片这类 DOM 是在渲染函数里拼出来的，
+          它们**不在** template() 里 —— 只看模板会一片误报
+          （.ms-dur / .tm-bar 等）。而真正的拼写错误在任何地方都不会出现，
+          所以这个口径照样抓得住 typos。
+        """
+        # 少数 class 归别的模块或 HTML 所有，本文件只是使用者
+        external = {
+            'wb-body',        # winbox 自己的窗口主体
+            'ctx-menu',       # ui.js 的右键菜单
+            'hidden',         # index.html 的通用类
+        }
+        offenders = []
+        for name in _js_files():
+            src = _read(name)
+            if not _template_html(src):
+                continue          # 不是「窗口类」的文件，跳过
+            known = _class_names(src)
+            selectors = set(re.findall(r"querySelector\('\.([\w-]+)'\)", src))
+            for cls in sorted(selectors):
+                if cls in known or cls in external:
+                    continue
+                offenders.append("%s 查了 .%s，但这个 class 在本文件里从没出现过"
+                                 % (name, cls))
+        self.assertEqual(offenders, [],
+                         "选择器指向了不存在的 class（运行时会拿到 null）：\n  "
+                         + "\n  ".join(offenders))
+
+
 class FrontendCrossModuleCallTests(unittest.TestCase):
     """跨模块调用名必须真的存在。"""
 
