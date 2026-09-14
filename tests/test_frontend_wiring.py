@@ -207,6 +207,41 @@ class FrontendDomLookupTests(unittest.TestCase):
                          + "\n  ".join(offenders))
 
 
+    def test_every_saved_window_kind_has_a_restore_branch(self):
+        """
+        ★ `windowKind()` 认出来的每一种窗口，都必须在 `restoreOne()` 里有还原分支。
+
+        漏掉的后果很隐蔽：那个窗口**能存进布局**（kind 不是 'unknown'，
+        保存那一侧看起来完全正常），但下次打开页面**不会被还原** ——
+        用户看到的是「就这个窗口的持久化坏了」，而代码里两边都像是对的。
+
+        音乐播放器正好踩过这条：给根元素挂了 `.music` 类名（于是它开始入库），
+        却没有在 restoreOne() 里加分支 —— 表现就是「别的窗口都能恢复，它不行」。
+        这个坑对下一个新窗口一模一样，所以用静态检查钉住。
+        """
+        src = _read("sessionstate.js")
+
+        kind_body = re.search(r"function windowKind\(record\) \{(.*?)\n\}", src, re.S)
+        self.assertIsNotNone(kind_body, "没找到 windowKind()，检查是不是改名了")
+        kinds = set(re.findall(r"return '([\w-]+)';", kind_body.group(1)))
+        kinds.discard("unknown")          # 'unknown' 就是「不保存也不还原」
+
+        restore_body = re.search(r"async function restoreOne\(item\) \{(.*?)\n\}", src, re.S)
+        self.assertIsNotNone(restore_body, "没找到 restoreOne()，检查是不是改名了")
+        restored = set(re.findall(r"kind === '([\w-]+)'", restore_body.group(1)))
+
+        missing = sorted(kinds - restored)
+        self.assertEqual(
+            missing, [],
+            "★ 这些窗口类型会被保存进布局，但 restoreOne() 里没有还原分支"
+            "（表现是「就它不持久化」）：%s" % missing)
+
+        extra = sorted(restored - kinds)
+        self.assertEqual(
+            extra, [],
+            "restoreOne() 处理了 windowKind() 永远不会返回的类型：%s" % extra)
+
+
 class FrontendCrossModuleCallTests(unittest.TestCase):
     """跨模块调用名必须真的存在。"""
 

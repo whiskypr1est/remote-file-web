@@ -40,6 +40,7 @@ import { openExplorer } from './explorer.js';
 import { openPreview } from './preview.js';
 import { openEditor } from './editor.js';
 import { restoreTerminal } from './terminal.js';
+import { openMusic } from './music.js';
 
 /** 状态文档的版本号。格式一旦不兼容就 +1，老文档会被整体丢弃。 */
 export const STATE_VERSION = 1;
@@ -331,6 +332,13 @@ function windowKind(record) {
   if (record && (record.previewCtx || (classes && classes.contains('preview')))) {
     return 'preview';
   }
+  // 音乐播放器（music.js 会给自己挂 .music 类名）。
+  // 它只需要几何信息：正在播的那首歌、音量、播放模式都由服务端的
+  // 播放偏好（/api/music/prefs）按用户记着，还原窗口时它会自己接上 ——
+  // 同一件事不存两份，免得两边对不上。
+  if (classes && classes.contains('music')) {
+    return 'music';
+  }
   return 'unknown';
 }
 
@@ -391,6 +399,10 @@ function collectWindow(record) {
     }
   }
 
+  // 音乐播放器刻意**不在上面加任何字段**：它只需要几何信息。
+  // 正在播的那首歌、音量、播放模式都由服务端的播放偏好
+  // （/api/music/prefs，按用户存）记着，窗口还原后自己会接上 ——
+  // 同一件事存两份，迟早会出现「布局说在放 A、偏好说在放 B」。
   return item;
 }
 
@@ -735,8 +747,40 @@ async function restoreOne(item) {
     restoreWindowFlags(result.record, item);
     return true;
   }
+  if (kind === 'music') {
+    return restoreMusic(item);
+  }
 
   return false;
+}
+
+/**
+ * 还原音乐播放器窗口：走 openMusic()，和手动打开完全同一条路径。
+ *
+ * ★ 只还原窗口本身，**不会开始播放**：浏览器的自动播放策略本来就会拦掉
+ * 没有用户交互的播放，而且「一打开页面就突然出声」对用户也很不友好。
+ * 上次听的那首歌会被摆好（暂停状态），按一下播放键就接着听。
+ */
+function restoreMusic(item) {
+  // 功能可能在这之后被管理员关掉了（config.json 的 music.enabled）：
+  // 存档里还留着这个窗口，但打开它只会得到一个「每个接口都 403」的空壳，
+  // 不如干脆不还原 —— 与「关掉后开始菜单里没有入口」保持一致。
+  const features = (desktop && desktop.info && desktop.info.features) || {};
+  if (features.music !== true) {
+    return Promise.resolve(false);
+  }
+
+  const record = openMusic(desktop, { ...geometryOf(item), silent: true });
+  if (!record) {
+    return Promise.resolve(false);
+  }
+
+  // 窗口是按存档尺寸建的，但 clampGeometry 可能因为换了小屏幕而夹过，
+  // 这里再贴合一次保证与存档一致（不播过渡动画，位置本就是用户熟悉的位置）
+  applyGeometry(record, geometryOf(item), false);
+  restoreWindowFlags(record, item);
+
+  return Promise.resolve(!!wm.get(record.id));
 }
 
 /** 还原资源管理器窗口：走 openExplorer()，和手动打开完全同一条路径 */

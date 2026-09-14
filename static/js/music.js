@@ -27,6 +27,12 @@
    5. **导入走内置文件选择器**：不弹系统文件框（那选的是**服务器**上的路径，
       浏览器根本看不到），而是列「我能看到的根目录」让用户点选 ——
       与文件管理器同一套可见性规则。
+
+   6. **参与布局持久化**（与资源管理器/终端/预览一样）。
+      根元素挂 `.music`，sessionstate.js 的 windowKind() 认得出它，
+      于是窗口位置与大小会被保存，下次打开页面自动还原；
+      「上次听的是哪首」由服务端的播放偏好接管（见第 2 点，还原时不出声）。
+      窗口内部的播放进度（听到第几秒）**不还原** —— 与常见播放器一致。
    ========================================================================== */
 
 import * as api from './api.js';
@@ -1558,8 +1564,14 @@ let openRecord = null;
  *
  * ★ 刻意做成**单例**：两个播放器会同时出声，而且「当前播放」这份状态无处安放。
  *   已经开着就把它拉到前面（最小化了就先还原），而不是再开一个。
+ *
+ * @param {object} desktop
+ * @param {object} geom 可选几何信息 {x, y, width, height, silent}，
+ *                      由 sessionstate.js 还原布局时传入（与 openExplorer 同款）。
+ *                      也正因为是单例，还原时若窗口已经在，就只把它拉到前面 ——
+ *                      位置以已有的那个为准，不会被存档覆盖。
  */
-export function openMusic(desktop) {
+export function openMusic(desktop, geom) {
   if (openRecord && wm.get(openRecord.id)) {
     const win = openRecord.win;
     if (win) {
@@ -1571,14 +1583,19 @@ export function openMusic(desktop) {
     return openRecord;
   }
 
+  const box = geom || {};
   const player = new MusicPlayer(desktop);
 
   const record = wm.create({
     title: '音乐播放器',
     iconName: 'music',
     content: player.root,
-    width: 1080,
-    height: 660,
+    width: Number.isFinite(Number(box.width)) ? Number(box.width) : 1080,
+    height: Number.isFinite(Number(box.height)) ? Number(box.height) : 660,
+    x: Number.isFinite(Number(box.x)) ? Number(box.x) : undefined,
+    y: Number.isFinite(Number(box.y)) ? Number(box.y) : undefined,
+    // 还原布局时不要播进入动画，否则会看到窗口自己滑过去
+    silent: !!box.silent,
     minWidth: 720,
     minHeight: 460,
     windowClass: 'music-win',
