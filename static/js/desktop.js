@@ -501,7 +501,14 @@ export class Desktop {
 
   renderStartMenu() {
     const self = this;
-    const user = (this.info.user && this.info.user.username) || 'admin';
+    // ★ 多用户：这里显示的是**当前登录的人**（服务端 /api/system/info 的 user 段）。
+    //   改造前它取的是 config 的 auth.username，于是所有人看到的都是管理员的名字。
+    const account = this.info.user || {};
+    const user = account.username || 'admin';
+    const shown = account.display_name || user;
+    // 管理员额外标一下：多用户下「我是不是管理员」决定了开始菜单里有没有
+    // 用户管理入口，摆在名字旁边比让人自己去试更清楚
+    const roleTag = account.is_admin ? '<span class="sm-role">管理员</span>' : '';
 
     const roots = this.info.roots || [];
 
@@ -511,8 +518,11 @@ export class Desktop {
       '</div>';
     html += '<div class="sm-user">' +
       '<div class="sm-avatar">' + icon('user') + '</div>' +
-      '<div><div class="sm-user-name">' + ui.escapeHtml(user) + '</div>' +
-      '<div class="sm-user-sub">' + ui.escapeHtml(this.info.server.hostname) + ' · 已登录</div></div>' +
+      '<div><div class="sm-user-name">' + ui.escapeHtml(shown) + roleTag + '</div>' +
+      // 副标题里带上**登录名**：显示名可能是中文，而管理员在审计日志、
+      // 用户管理窗口里看到的都是登录名，两处对得上才方便沟通
+      '<div class="sm-user-sub">' + ui.escapeHtml(user) + ' · ' +
+      ui.escapeHtml(this.info.server.hostname) + '</div></div>' +
       '</div>';
 
     html += '<div class="sm-list">';
@@ -667,6 +677,13 @@ export class Desktop {
 
     const ips = (info.server.ips || []).join('、') || '未知';
 
+    // 多用户：这里是**当前登录的人**，不是 config 里的用户名
+    const account = info.user || {};
+    const accountText = account.display_name && account.display_name !== account.username
+      ? account.display_name + '（' + account.username + '）'
+      : (account.username || '—');
+    const accountRole = account.is_admin ? '管理员' : '普通用户';
+
     this.trayPopup.innerHTML =
       '<div class="tp-time">' + pad2(now.getHours()) + ':' + pad2(now.getMinutes()) + ':' + pad2(now.getSeconds()) + '</div>' +
       '<div class="tp-date">' + ui.escapeHtml(dateText) + '</div>' +
@@ -676,7 +693,8 @@ export class Desktop {
       '<div class="tp-row"><span class="k">访问地址</span><span class="v">' + ui.escapeHtml(location.origin) + '</span></div>' +
       '<div class="tp-row"><span class="k">系统</span><span class="v">' + ui.escapeHtml(info.server.platform) + '</span></div>' +
       '<div class="tp-row"><span class="k">运行时长</span><span class="v">' + ui.escapeHtml(formatUptime(info.server.uptime_seconds)) + '</span></div>' +
-      '<div class="tp-row"><span class="k">当前用户</span><span class="v">' + ui.escapeHtml(info.user.username) + '</span></div>' +
+      '<div class="tp-row"><span class="k">当前用户</span><span class="v">' + ui.escapeHtml(accountText) + '</span></div>' +
+      '<div class="tp-row"><span class="k">权限</span><span class="v">' + ui.escapeHtml(accountRole) + '</span></div>' +
       '</div>';
   }
 

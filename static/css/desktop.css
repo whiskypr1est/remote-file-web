@@ -722,6 +722,20 @@ input, textarea, .selectable, .selectable * {
   color: #22262c;
 }
 
+/* 「管理员」小标签：多用户下它决定开始菜单里有没有用户管理入口 */
+.sm-role {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 6px;
+  font-size: 10px;
+  font-weight: 400;
+  line-height: 15px;
+  vertical-align: 1px;
+  color: #fff;
+  background: var(--accent, #0a6ad6);
+  border-radius: 8px;
+}
+
 .sm-user-sub {
   font-size: 11px;
   color: var(--text-weak);

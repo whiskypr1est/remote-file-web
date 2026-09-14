@@ -144,19 +144,61 @@ def resolver_for(self, user) -> PathResolver:
 | 阶段 | 内容 | 交付物 |
 |---|---|---|
 | **0** | git 基线 | ✅ `70ace22` |
-| **1** | `users.json` + `fileweb/users.py`（增删改查、校验、原子写、容错）+ **迁移**（无 users.json 时从 `config.auth` 派生管理员） | 新模块 + `tests/test_users.py` |
-| **2** | 认证改造：登录查用户表、`token_version` 校验、`require_admin`、改密码写 users.json | `auth.py` / `deps.py` / `security.py` |
-| **3** | 每用户 resolver（`resolver_for`）+ **32 处调用点**改造 | `deps.py` + 5 个路由文件 |
-| **4** | 横切面：终端每用户上限与 idle=0、任务归属、按用户分状态文件 | `terminal.py` / `jobs.py` / `shortcuts.py` / `userstate.py` |
-| **5** | 管理界面：用户管理 + 在线列表 + 审计查看 | `routers/users.py` + `static/js/usermgr.js` |
-| **6** | 子用户视角收口：`/api/system/info` 按用户返回、隐藏磁盘列表、入口按权限显隐 | `system.py` / `desktop.js` |
-| **7** | 文档（README / config.example.json）+ 全套回归 | README |
+| **1** | `users.json` + `fileweb/users.py`（增删改查、校验、原子写、容错）+ **迁移**（无 users.json 时从 `config.auth` 派生管理员） | ✅ `2b2e191` + `tests/test_users.py` |
+| **2** | 认证改造：登录查用户表、`token_version` 校验、`require_admin`、改密码写 users.json | ✅ `9311fa5` |
+| **3** | 每用户 resolver（`resolver_for`）+ **32 处调用点**改造 | ✅ `e54b631` + `tests/test_multiuser_isolation.py` |
+| **4** | 横切面：终端每用户上限与 idle=0、任务归属、按用户分状态文件 | ✅ `0560b62` + `tests/test_multiuser_{terminal,jobs,state}.py` |
+| **5** | 管理界面：用户管理 + 在线列表 + 审计查看 | ✅ `a27e87a` + `routers/users.py` + `static/js/usermgr.js` + `tests/test_multiuser_admin.py` |
+| **6** | 子用户视角收口：`/api/system/info` 按用户返回、隐藏磁盘列表、入口按权限显隐 | ✅ 落在阶段 3/5 里（resolver 不给子用户挂盘、`features.users/terminal/sysmon` 按用户+权限下发，且接口侧也真的 403） |
+| **7** | 文档（README / config.example.json）+ 全套回归 | ✅ 见下 |
 
 **验收硬指标**：现有 **267 条测试必须保持全绿**（阶段 1 的迁移设计就是为了这个 ——
-无 `users.json` 时行为与现在完全一致）。新增测试重点：
-「子用户拿不到别人的根」「停用后立即失效」「token_version 生效」「任务归属隔离」。
+无 `users.json` 时行为与现在完全一致）。
+结果：**267 → 422 条全部通过**，且既有用例只在两处做过必要改动
+（`test_password.py` 的口令断言改为钉住新机制；`tests/_harness.py` 与
+`test_fileweb.py` 增加状态文件重定向，防止测试写脏真实部署）。
 
-## 八、已知的、接受了的风险（写下来免得以后误判）
+## 八、实施过程中额外发现并修掉的问题
+
+改造本身按计划推进，但过程中撞上了几个**与多用户无关、却是被它暴露出来**的真问题。
+记在这里，因为它们解释了为什么有些改动看起来「超出了计划范围」。
+
+1. **无根子用户开命令行会 500（阶段 3 遗漏的真 bug）**
+   `_resolve_start_dir` 的回退分支里残留着改造前的 `state.base_dir`，而该函数已经
+   改成接收 resolver 了 —— 于是「第一个根取不到」时直接 `NameError`。
+   **没有根的子用户正好会走到那条分支**，也就是「新建一个还没分配目录的学生账号，
+   让他开个命令行」就会 500。
+   它躲过了当时全套 315 条测试，因为此前没有任何用例构造过「无根子用户 + 终端」。
+   教训：**改造时改了函数签名，一定要把函数体里对旧参数的引用一起搜一遍。**
+
+2. **测试第三次写脏真实部署（`audit.log.jsonl`）**
+   根因与前两次一致：`tests/test_fileweb.py` 的端到端用例要覆盖 `uvicorn.run`
+   的 `proxy_headers`，所以它自己起进程、自己拼配置，调 `prepare()` 时**不带
+   `cfg_path`**，于是相对路径被解析成项目根目录下的绝对路径写进临时配置。
+   这次不再逐处打补丁，而是做成机制：`tests/_harness.py` 新增
+   `redirect_state_paths()` + `STATE_PATH_KEYS` 登记表，并加一条**结构性守卫** ——
+   扫描 `DEFAULT_CONFIG` 里所有「默认值是 .json/.jsonl 文件」的配置项，
+   凡未登记的立刻变红。以后新增同类配置项时守卫会先失败，逼作者补上重定向。
+
+3. **`tools/gen_password.py` 会「假装」改成功（多用户引入的回归）**
+   它只写 `config.json` 的 `auth` 段，而登录早就改成查 `users.json` 了 ——
+   于是它打印「修改成功」，但口令根本没变。用户会以为自己记错密码，
+   反复重试直到以为服务坏了。**比直接报错糟糕得多。**
+   已改为写用户表（并同步 `config.json` 供引导用），顺带修掉两处：
+   * 提示语「需要重启后才会读取新口令」在改用户表后是错的（每请求现读，
+     立即生效）；
+   * 口令提示文件原本写死在代码目录，用 `--config` 操作别的实例时会覆盖
+     **真实部署的明文口令文件** —— 又是一个「测试/多实例写脏真实部署」。
+   配了 `tests/test_gen_password_tool.py`，其中「改完必须真的能登录」是硬断言。
+
+4. **`permissions`（terminal / sysmon）只在界面上生效过一段时间**
+   一开始只是在 `/api/system/info` 的 `features` 里下发、由前端隐藏入口，
+   接口本身并不拦 —— 那等于管理员以为自己收了权限，实际只是看不见按钮。
+   现在 `deps.feature_allowed` / `feature_allowed_for` 是**唯一一处实现**，
+   由 `/api/system/info`、`routers/terminal.py`（含 WebSocket 重连路径）、
+   `routers/sysmon.py` 共用。
+
+## 九、已知的、接受了的风险（写下来免得以后误判）
 
 1. **全权限终端 ⇒ 无真实隔离**（见第〇节）。子用户可以看同学的文件、伪造管理员会话。
 2. **服务以 SYSTEM（或等价高权限）运行**：终端里的误操作（`del /s`）可以直接毁掉系统。
