@@ -100,7 +100,16 @@ from typing import Any, Dict, Optional
 from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 
-from ..deps import SESSION_COOKIE, client_ip, get_state, get_user, owner_of, resolver_of
+from ..deps import (
+    SESSION_COOKIE,
+    client_ip,
+    feature_allowed_for,
+    get_state,
+    get_user,
+    owner_of,
+    require_feature,
+    resolver_of,
+)
 from ..terminal import (
     SessionGone,
     SessionReplaced,
@@ -229,6 +238,11 @@ async def create_session(request: Request, payload: Optional[SessionPayload] = N
             status_code=403,
             detail="命令行功能已在服务端关闭（config.json 的 terminal.enabled = false）",
         )
+
+    # ★ 与 /api/system/info 下发的 features.terminal 用同一个判断：
+    #   管理员在用户管理里对某个人关掉命令行之后，接口也必须真的关掉，
+    #   否则「关掉」只是让他看不见入口（见 deps.feature_allowed 的说明）。
+    require_feature(request, "terminal", "命令提示符")
 
     shell = str(tcfg.get("shell") or "cmd.exe")
     start_dir = _resolve_start_dir(resolver_of(request), tcfg, state.base_dir)
@@ -418,6 +432,16 @@ async def terminal_ws(websocket: WebSocket) -> None:
 
     ip = websocket.client.host if websocket.client else "unknown"
     sid_from_query = _query_sid(websocket)
+
+    # ★ 权限被管理员单独收掉时，连**重连已有的会话**也要拒。
+    #   只在「创建会话」那一步挡是不够的：收权限之前开着的窗口，
+    #   刷新页面就能靠 sid 重新接上（会话本身还活着），
+    #   于是「关掉权限」对已经在跑的 shell 完全无效。
+    if not feature_allowed_for(getattr(websocket.state, "user", None), "terminal"):
+        _audit("拒绝连接 sid=%s 原因=管理员已关闭该账号的命令行权限" % sid_from_query)
+        await _reject(websocket, "管理员已对你的账号关闭「命令提示符」功能")
+        return
+
 
     session = manager.get(sid_from_query) if sid_from_query else None
     first_message: Optional[Dict[str, Any]] = None

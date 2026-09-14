@@ -151,6 +151,92 @@ def _normalize_roots(raw: Any) -> List[Dict[str, Any]]:
     return roots
 
 
+# ---------------------------------------------------------------------------
+# 可见目录的「文本格式」
+# ---------------------------------------------------------------------------
+# 管理界面用一块多行文本框来编辑「这个用户能看到哪些目录」——
+# 那是最贴近管理员手上信息（他手上就是一个路径）的输入方式，
+# 而做一个目录选择器等于把整棵文件树搬进管理窗口。
+#
+# ★ 解析放在**服务端**而不是前端：
+#   * 格式只有一处定义，前端不需要懂；
+#   * 能在本项目的 Python 测试里直接覆盖（前端解析逻辑没法在无 Node 的
+#     测试环境里跑，而这段逻辑一旦出错就是「把权限分错人」，必须有测试）。
+#   前端只负责把文本原样发过来、把服务端给的文本显示出来。
+#
+# 格式：每行一个目录，`路径 | 名称 | 只读`，后两段可省略；
+#      以 # 开头的行是注释，空行忽略。
+_READONLY_WORDS = ("只读", "ro", "readonly", "r")
+
+
+def _is_readonly_word(text: str) -> bool:
+    return str(text or "").strip().lower() in _READONLY_WORDS
+
+
+def parse_roots_text(text: Any) -> List[Dict[str, Any]]:
+    """
+    把「每行一个目录」的文本解析成根目录列表（再过一遍 _normalize_roots）。
+
+    宽容优先：管理员是在手写路径，多一个空格、少一段名称都不该报错 ——
+    真正的把关（路径是否有意义）在运行时由解析器负责。
+    """
+    roots: List[Dict[str, Any]] = []
+
+    for line in str(text or "").splitlines():
+        raw = line.strip()
+        if not raw or raw.startswith("#"):
+            continue
+
+        parts = [piece.strip() for piece in raw.split("|")]
+        path = parts[0]
+        if not path:
+            continue
+
+        name = parts[1] if len(parts) > 1 else ""
+        # 只读可以从第二段之后**任意一段**写出来：
+        # 既支持 `路径 | 只读`（省略名称），也支持 `路径 | 名称 | 只读`
+        readonly = any(_is_readonly_word(piece) for piece in parts[1:])
+        if readonly and _is_readonly_word(name):
+            name = ""          # 那一格写的是「只读」，不是名称
+
+        item: Dict[str, Any] = {"path": path, "readonly": readonly}
+        if name:
+            item["name"] = name
+        roots.append(item)
+
+    return _normalize_roots(roots)
+
+
+def format_roots_text(roots: Any) -> str:
+    """
+    parse_roots_text 的逆操作（给管理界面回显用）。
+
+    ★ 刻意**不输出 id**：id 是派生值（_normalize_roots 用目录名兜底），
+    让管理员看见/编辑它只会带来「改了 id 却不知道会影响什么」的困惑。
+    """
+    lines = []
+    for item in (roots or []):
+        if not isinstance(item, dict):
+            continue
+        path = str(item.get("path") or "").strip()
+        if not path:
+            continue
+
+        name = str(item.get("name") or "").strip()
+        if name == os.path.basename(path.rstrip("\\/")):
+            # 名称与目录名相同 = 自动派生的，显示出来只是噪音
+            name = ""
+
+        if item.get("readonly"):
+            lines.append("%s | %s | 只读" % (path, name) if name
+                         else "%s | 只读" % path)
+        elif name:
+            lines.append("%s | %s" % (path, name))
+        else:
+            lines.append(path)
+    return "\n".join(lines)
+
+
 def _normalize_permissions(raw: Any) -> Dict[str, bool]:
     defaults = {"terminal": True, "sysmon": True}
     if not isinstance(raw, dict):

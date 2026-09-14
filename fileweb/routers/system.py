@@ -28,7 +28,13 @@ from starlette.concurrency import run_in_threadpool
 
 from .. import APP_NAME, __version__
 from ..config import BASE_DIR
-from ..deps import get_state, local_ip_addresses, resolver_of
+from ..deps import (
+    feature_allowed_for,
+    get_state,
+    get_user,
+    local_ip_addresses,
+    resolver_of,
+)
 from ..office import find_soffice, reset_soffice_cache
 
 router = APIRouter(prefix="/api/system", tags=["系统"])
@@ -71,6 +77,21 @@ async def system_info(request: Request) -> Dict[str, Any]:
 
     soffice = find_soffice(office_cfg.get("soffice_path") or "") if office_cfg.get("enabled", True) else None
 
+    # ★ 多用户：这段信息要**按当前登录的人**给，而不是按 config 里的 auth 段。
+    #   config 的用户名只在首次引导时用过一次，之后谁是管理员由用户表说了算。
+    account = get_user(request)
+    is_admin_user = str(account.get("role") or "") == "admin"
+
+    def _allowed(key: str, cfg_enabled: bool) -> bool:
+        """
+        功能对这个用户是否开放 = 配置里开着 **且** 这个人没被单独关掉。
+
+        ★ 判断走 deps.feature_allowed_for，与 routers/terminal.py、
+          routers/sysmon.py 里那道 403 是**同一份实现** —— 两边跑偏就会出现
+          「界面藏了入口、接口却照收」，或者反过来「入口在、点了就 403」。
+        """
+        return bool(cfg_enabled) and feature_allowed_for(account, key)
+
     return {
         "ok": True,
         "app": {
@@ -88,7 +109,12 @@ async def system_info(request: Request) -> Dict[str, Any]:
             "uptime_seconds": int(time.time() - state.started_at),
         },
         "user": {
-            "username": auth_cfg.get("username") or "admin",
+            "username": account.get("username") or "",
+            "display_name": (account.get("display_name")
+                             or account.get("username") or ""),
+            "role": account.get("role") or "user",
+            # 前端据此决定是否显示「用户管理」等管理员入口
+            "is_admin": is_admin_user,
         },
         "roots": resolver_of(request).public_list(),
         "ui": {
@@ -112,9 +138,14 @@ async def system_info(request: Request) -> Dict[str, Any]:
             "recycle_bin": bool((cfg.get("delete") or {}).get("use_recycle_bin", True)) and _recycle_bin_available(),
             "thumbnails": bool((cfg.get("thumbs") or {}).get("enabled", True)),
             # 命令行功能：默认开启，前端据此决定是否显示入口
-            "terminal": bool((cfg.get("terminal") or {}).get("enabled", True)),
+            "terminal": _allowed("terminal",
+                                 bool((cfg.get("terminal") or {}).get("enabled", True))),
             # 任务管理器（只读系统监控）：同样据此决定开始菜单里是否出现入口
-            "sysmon": bool((cfg.get("sysmon") or {}).get("enabled", True)),
+            "sysmon": _allowed("sysmon",
+                               bool((cfg.get("sysmon") or {}).get("enabled", True))),
+            # ★ 用户管理（用户列表 / 在线情况 / 审计日志）：**仅管理员**。
+            #   前端据此决定开始菜单里是否出现入口 —— 子用户看不到它。
+            "users": is_admin_user,
             "text_encodings": ["utf-8", "gb18030", "big5", "latin-1"],
         },
         "versions": _read_vendor_versions(),

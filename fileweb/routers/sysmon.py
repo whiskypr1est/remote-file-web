@@ -19,7 +19,7 @@ from fastapi import APIRouter, HTTPException, Request
 from starlette.concurrency import run_in_threadpool
 
 from .. import sysmon
-from ..deps import get_state
+from ..deps import get_state, require_feature
 
 router = APIRouter(prefix="/api/sysmon", tags=["系统监控"])
 
@@ -40,6 +40,11 @@ async def sysmon_snapshot(request: Request, top: int = 0, sort: str = "cpu") -> 
             status_code=403,
             detail="系统监控已在服务端关闭（config.json 的 sysmon.enabled = false）",
         )
+
+    # ★ 与 /api/system/info 下发的 features.sysmon 用同一个判断：
+    #   管理员在用户管理里对某个人关掉这个功能后，接口也必须真的关掉，
+    #   否则「关掉」只是让他看不见按钮（见 deps.feature_allowed 的说明）。
+    require_feature(request, "sysmon", "任务管理器")
 
     # 采集是阻塞的（进程枚举要读一堆系统信息），丢到线程池里做
     data = await run_in_threadpool(sysmon.snapshot, settings)

@@ -114,6 +114,18 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     # 所在目录为基准），同样只是「基础路径」。
     "desktop_shortcuts_path": "desktop_shortcuts.json",
 
+    # ★ 审计日志：登录成功/失败、登出、改密码、管理员改账号等**账号层面的动作**
+    # 落盘留痕（一行一个 JSON，见 fileweb/audit.py）。
+    # 不记录文件浏览、上传下载这些高频动作 —— 那会把日志淹掉，而且真实的
+    # 取证需求集中在账号动作上。写失败绝不影响业务（磁盘满也不该让人登不进来）。
+    "audit": {
+        "path": "audit.log.jsonl",
+        # 单个文件的体积上限，超出后轮转成 audit.log.jsonl.1 / .2 / …
+        "max_bytes": 4 * 1024 * 1024,
+        # 保留几个历史文件（0 = 不保留，直接丢弃旧的）
+        "backups": 3,
+    },
+
     "upload": {
         "max_file_size_mb": 2048,     # 单文件上限 2GB
         "blocked_extensions": [
@@ -570,6 +582,37 @@ def prepare(cfg: Dict[str, Any], cfg_path: str = "") -> Dict[str, Any]:
 
         shortcuts_module.set_path(cfg["desktop_shortcuts_path"])
     except Exception:  # noqa: BLE001 - 下发失败时 shortcuts 会用自己的默认路径
+        pass
+
+    # 审计日志：路径同样落在配置文件旁边（多实例各记各的），
+    # 轮转参数做范围兜底后下发给 audit 模块。
+    audit_cfg = cfg.setdefault("audit", {})
+    if not isinstance(audit_cfg, dict):
+        audit_cfg = {}
+        cfg["audit"] = audit_cfg
+    audit_cfg["path"] = _resolve_under_config(
+        audit_cfg.get("path"), DEFAULT_CONFIG["audit"]["path"])
+    try:
+        audit_cfg["max_bytes"] = max(
+            64 * 1024, int(audit_cfg.get("max_bytes")
+                           or DEFAULT_CONFIG["audit"]["max_bytes"]))
+    except (TypeError, ValueError):
+        audit_cfg["max_bytes"] = DEFAULT_CONFIG["audit"]["max_bytes"]
+    try:
+        audit_cfg["backups"] = max(
+            0, min(20, int(audit_cfg.get("backups")
+                           if audit_cfg.get("backups") is not None
+                           else DEFAULT_CONFIG["audit"]["backups"])))
+    except (TypeError, ValueError):
+        audit_cfg["backups"] = DEFAULT_CONFIG["audit"]["backups"]
+
+    try:
+        from . import audit as audit_module
+
+        audit_module.set_path(audit_cfg["path"])
+        audit_module.configure(max_bytes=audit_cfg["max_bytes"],
+                               backups=audit_cfg["backups"])
+    except Exception:  # noqa: BLE001 - 下发失败时 audit 会用自己的默认路径
         pass
 
     upload = cfg.setdefault("upload", {})

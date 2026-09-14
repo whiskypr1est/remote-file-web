@@ -44,6 +44,7 @@ from starlette.datastructures import Headers, MutableHeaders
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from fileweb import APP_NAME, __version__, config as config_module
+from fileweb import presence
 from fileweb import users as users_module
 from fileweb.deps import (
     PUBLIC_API_PATHS,
@@ -52,6 +53,7 @@ from fileweb.deps import (
     AppState,
     check_csrf,
     check_origin,
+    resolve_client_ip,
     resolve_session_user,
     session_max_age,
 )
@@ -65,6 +67,7 @@ from fileweb.routers import jobs as jobs_router
 from fileweb.routers import sysmon as sysmon_router
 from fileweb.routers import system as system_router
 from fileweb.routers import terminal as terminal_router
+from fileweb.routers import users as users_router
 from fileweb.security import verify_token
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -162,6 +165,24 @@ class SecurityMiddleware:
 
             # 把用户记录挂到 scope["state"]，下游 request.state.user 就能取到
             scope.setdefault("state", {})["user"] = account
+
+            # ★ 在线表：每个已认证请求都把「最近见过他」刷新一下。
+            # 放在这里而不是各路由里，是为了「谁在线」不取决于某个路由有没有
+            # 记得上报 —— 漏一个路由就会出现「人在用但显示离线」。
+            # 更新是节流的（见 presence.TOUCH_INTERVAL_SECONDS），
+            # 而且失败只打警告，绝不影响请求本身。
+            peer = ""
+            client = scope.get("client")
+            if client:
+                peer = client[0] or ""
+            presence.touch(
+                account.get("username") or "",
+                ip=resolve_client_ip(
+                    peer, headers,
+                    (state.cfg.get("auth") or {}).get("trusted_proxies") or []),
+                display_name=account.get("display_name") or "",
+                role=account.get("role") or "",
+            )
 
             # 改状态请求：校验同源 + CSRF 令牌
             method = (scope.get("method") or "GET").upper()
@@ -432,6 +453,7 @@ def create_app(cfg=None) -> FastAPI:
     app.include_router(terminal_router.router)
     app.include_router(sysmon_router.router)
     app.include_router(jobs_router.router)
+    app.include_router(users_router.router)
 
     # ---- 静态资源 ----
     if os.path.isdir(STATIC_DIR):

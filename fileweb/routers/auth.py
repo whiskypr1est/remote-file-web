@@ -24,7 +24,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from .. import users
+from .. import audit, presence, users
 from ..deps import (
     SESSION_COOKIE,
     client_ip,
@@ -80,6 +80,12 @@ async def login(request: Request, payload: LoginPayload) -> JSONResponse:
     #      用来派生管理员（见 users.ensure_bootstrap），之后不再参与登录。
     account, reason = users.authenticate(payload.username, payload.password)
     if account is None:
+        # ★ 登录失败也留痕：一则是「有人在猜口令」的早期信号，
+        #    二则是账号被停用后仍有人尝试登录的凭证。
+        #    这里记的是**尝试登录的那个用户名**（可能根本不存在），
+        #    所以别把它当成「这个账号做了坏事」。
+        audit.log(audit.EVENT_LOGIN_FAIL, username=payload.username, ip=ip,
+                  result="fail", detail=reason)
         remaining = state.register_login_failure(
             ip,
             int(auth.get("max_login_fails") or 5),
@@ -100,6 +106,13 @@ async def login(request: Request, payload: LoginPayload) -> JSONResponse:
     # 3) 登录成功
     state.clear_login_failures(ip)
     users.record_login(account["username"])
+
+    audit.log(audit.EVENT_LOGIN_OK, username=account["username"], ip=ip,
+              detail="角色=%s" % (account.get("role") or "user"))
+    # 在线表：登录是**事件**，不受刷新节流限制，一定立即生效
+    presence.touch(account["username"], ip=ip,
+                   display_name=account.get("display_name") or "",
+                   role=account.get("role") or "", is_login=True)
 
     secret = str(auth.get("session_secret") or "")
     max_age = session_max_age(cfg)
@@ -223,6 +236,9 @@ async def change_password(request: Request, payload: PasswordPayload) -> Dict[st
     state.clear_login_failures(ip)
     users.set_password(account["username"], new_password)
 
+    audit.log(audit.EVENT_PASSWORD_CHANGE, username=account["username"], ip=ip,
+              detail="本人修改；该用户已签发的会话全部失效")
+
     return {
         "ok": True,
         "message": "密码已修改，请用新密码重新登录",
@@ -233,7 +249,20 @@ async def change_password(request: Request, payload: PasswordPayload) -> Dict[st
 
 @router.post("/logout")
 async def logout(request: Request) -> JSONResponse:
-    """注销当前会话。"""
+    """
+    注销当前会话。
+
+    这个接口不在公开白名单里（见 deps.PUBLIC_API_PATHS），所以走到这里时
+    会话一定是有效的，可以放心取当前用户来记录审计与清在线表。
+    """
+    ip = client_ip(request)
+    account = get_user(request)
+
+    audit.log(audit.EVENT_LOGOUT, username=account["username"], ip=ip)
+    # 登出是显式的「我不在了」：留着 last_seen 会让管理员看到「刚还在线」的假象。
+    # 持久记录由审计日志承担，这里删掉不丢信息。
+    presence.forget(account["username"])
+
     response = JSONResponse({"ok": True, "message": "已注销"})
     response.delete_cookie(SESSION_COOKIE, path="/")
     return response

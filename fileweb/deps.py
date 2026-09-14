@@ -373,6 +373,38 @@ def owner_of(request: Request) -> str:
     return str(get_user(request).get("username") or "")
 
 
+def feature_allowed_for(user: Optional[Dict[str, Any]], key: str) -> bool:
+    """
+    某个用户记录是否被允许使用某个功能（`permissions` 没写这一项 = 允许）。
+
+    与 feature_allowed 是同一个判断，只是收的是用户记录而不是 Request ——
+    WebSocket 路由手上没有 Request，只有 websocket.state.user。
+    """
+    value = ((user or {}).get("permissions") or {}).get(key)
+    return True if value is None else bool(value)
+
+
+def feature_allowed(request: Request, key: str) -> bool:
+    """
+    当前用户是否被允许使用某个功能。
+
+    目前只用于 terminal / sysmon 两个「管理员可以单独收掉」的功能。
+    它与 `features` 下发给前端的那两个标记**必须是同一个判断**：
+    否则会出现「界面藏了入口、接口却照收」—— 管理员以为自己收掉了权限，
+    实际只是看不见按钮而已。所以两边都走这个函数（router/system.py 也一样）。
+    """
+    return feature_allowed_for(get_user(request), key)
+
+
+def require_feature(request: Request, key: str, label: str) -> None:
+    """功能被管理员对这个人关掉时返回 403（提示里点名是谁关的，便于排查）。"""
+    if not feature_allowed(request, key):
+        raise HTTPException(
+            status_code=403,
+            detail="管理员已对你的账号关闭「%s」功能" % label,
+        )
+
+
 # ---------------------------------------------------------------------------
 # 安全小工具
 # ---------------------------------------------------------------------------
@@ -405,6 +437,30 @@ def _ip_in_networks(ip: str, patterns: list) -> bool:
     return False
 
 
+def resolve_client_ip(peer: str, headers: Any, trusted: Any) -> str:
+    """
+    「TCP 对端 + 请求头 + 可信代理列表」-> 客户端 IP。
+
+    单独抽出来是因为调用方不止一个：路由层有 Request 可用，
+    而 ASGI 中间件里只有裸 scope（在线表要在那里刷新活动时间，
+    不值得为它专门构造一个 Request 对象）。
+    抽出来还能保证**只此一处**实现那段安全判断 —— 早先无条件采信
+    X-Forwarded-For 导致登录锁定被完全绕过，这种判断绝不该有第二份实现。
+    """
+    forwarded = ""
+    try:
+        forwarded = headers.get("x-forwarded-for") or ""
+    except Exception:  # noqa: BLE001
+        forwarded = ""
+
+    if trusted and forwarded and _ip_in_networks(peer, trusted):
+        first = forwarded.split(",")[0].strip()
+        if first:
+            return first
+
+    return peer or "unknown"
+
+
 def client_ip(request: Request) -> str:
     """
     取客户端 IP，用于登录失败计数与审计日志。
@@ -426,14 +482,7 @@ def client_ip(request: Request) -> str:
     cfg = (state.cfg if state is not None else None) or {}
     trusted = (cfg.get("auth") or {}).get("trusted_proxies") or []
 
-    if trusted:
-        forwarded = request.headers.get("x-forwarded-for")
-        if forwarded and _ip_in_networks(peer, trusted):
-            first = forwarded.split(",")[0].strip()
-            if first:
-                return first
-
-    return peer or "unknown"
+    return resolve_client_ip(peer, request.headers, trusted)
 
 
 def check_csrf(request: Request, session_token: str, secret: str) -> bool:

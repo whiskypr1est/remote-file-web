@@ -1,0 +1,466 @@
+/* ==========================================================================
+   用户管理窗口
+   --------------------------------------------------------------------------
+   三个标签页（用户 / 在线 / 审计日志）+ 一个覆盖式的编辑表单。
+   配色与其它窗口保持一致（#2b3038 文字、#fafbfc 工具栏、#e6e8ec 边框、
+   --accent 强调色），免得这里成为整个界面里唯一的例外。
+   ========================================================================== */
+
+.usermgr-win .wb-body {
+  overflow: hidden;
+}
+
+.um-root {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  font-size: 12px;
+  color: #2b3038;
+  background: #fff;
+}
+
+/* ---- 工具栏 ---- */
+
+.um-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid #e6e8ec;
+  background: #fafbfc;
+  flex: 0 0 auto;
+}
+
+.um-toolbar .um-spacer {
+  flex: 1;
+}
+
+.um-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 26px;
+  padding: 0 10px;
+  font-size: 12px;
+  font-family: inherit;
+  color: #2b3038;
+  background: #fff;
+  border: 1px solid #c6ccd4;
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.um-btn:hover {
+  background: #f0f4f9;
+  border-color: var(--accent, #0a6ad6);
+}
+
+.um-btn.primary {
+  color: #fff;
+  background: var(--accent, #0a6ad6);
+  border-color: var(--accent, #0a6ad6);
+}
+
+.um-btn.primary:hover {
+  filter: brightness(1.08);
+}
+
+.um-btn svg {
+  width: 14px;
+  height: 14px;
+}
+
+.um-select {
+  height: 26px;
+  font-size: 12px;
+  font-family: inherit;
+  border: 1px solid #c6ccd4;
+  border-radius: 3px;
+  background: #fff;
+  cursor: pointer;
+}
+
+.um-status {
+  color: var(--text-weak, #6b7280);
+  font-size: 11px;
+}
+
+.um-status.error {
+  color: #c0392b;
+}
+
+/* ---- 标签页 ---- */
+
+.um-tabs {
+  display: flex;
+  gap: 2px;
+  padding: 0 10px;
+  border-bottom: 1px solid #e6e8ec;
+  background: #fafbfc;
+  flex: 0 0 auto;
+}
+
+.um-tab {
+  position: relative;
+  padding: 7px 14px;
+  font-size: 12px;
+  color: #46505c;
+  cursor: pointer;
+  border: 1px solid transparent;
+  border-bottom: none;
+  border-radius: 4px 4px 0 0;
+  user-select: none;
+}
+
+.um-tab:hover {
+  background: #eef5fd;
+}
+
+.um-tab.active {
+  background: #fff;
+  border-color: #e6e8ec;
+  color: #1b2733;
+  font-weight: 600;
+}
+
+/* 选中页与内容区之间那 1px 的缝要盖掉，否则会看到一条断开的线 */
+.um-tab.active::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -1px;
+  height: 1px;
+  background: #fff;
+}
+
+.um-badge {
+  display: inline-block;
+  min-width: 16px;
+  padding: 0 5px;
+  margin-left: 3px;
+  font-size: 10px;
+  line-height: 15px;
+  text-align: center;
+  color: #fff;
+  background: #9aa4b0;
+  border-radius: 8px;
+}
+
+.um-tab.active .um-badge {
+  background: var(--accent, #0a6ad6);
+}
+
+/* ---- 内容区 ---- */
+
+.um-body {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.um-pane {
+  display: none;
+  height: 100%;
+  min-height: 0;
+}
+
+.um-pane.active {
+  display: block;
+}
+
+.um-table-wrap {
+  height: 100%;
+  overflow: auto;
+}
+
+.um-table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+
+.um-table th,
+.um-table td {
+  padding: 5px 8px;
+  text-align: left;
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  border-bottom: 1px solid #f0f2f5;
+}
+
+.um-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: #f5f7fa;
+  border-bottom: 1px solid #e0e4ea;
+  font-weight: 600;
+  font-size: 11px;
+  color: #46505c;
+  user-select: none;
+}
+
+.um-table tbody tr:hover {
+  background: #eef5fd;
+}
+
+.um-table td.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.um-table td.um-name {
+  font-weight: 500;
+}
+
+.um-table tr.disabled td.um-name {
+  color: #9aa4b0;
+  text-decoration: line-through;
+}
+
+.um-table td.um-time {
+  font-variant-numeric: tabular-nums;
+  color: #46505c;
+}
+
+.um-table td.um-detail {
+  color: var(--text-weak, #6b7280);
+  white-space: normal;
+}
+
+.um-table td.um-acts {
+  overflow: visible;
+}
+
+.um-empty {
+  padding: 18px;
+  text-align: center;
+  color: var(--text-weak, #6b7280);
+}
+
+/* 「我自己」标记 */
+.um-me {
+  display: inline-block;
+  margin-left: 5px;
+  padding: 0 5px;
+  font-size: 10px;
+  line-height: 15px;
+  color: #fff;
+  background: var(--accent, #0a6ad6);
+  border-radius: 8px;
+  vertical-align: 1px;
+}
+
+/* 状态小标签 */
+.um-pill {
+  display: inline-block;
+  padding: 0 6px;
+  font-size: 11px;
+  line-height: 16px;
+  border-radius: 8px;
+  background: #eef1f5;
+  color: #46505c;
+}
+
+.um-pill.ok {
+  background: #e6f4ea;
+  color: #1e7a3c;
+}
+
+.um-pill.off {
+  background: #fdecea;
+  color: #b3261e;
+}
+
+.um-pill.online {
+  background: #e6f4ea;
+  color: #1e7a3c;
+}
+
+.um-sub {
+  display: block;
+  font-size: 11px;
+  color: var(--text-weak, #6b7280);
+}
+
+/* 行内小按钮 */
+.um-mini {
+  height: 22px;
+  padding: 0 8px;
+  margin-right: 4px;
+  font-size: 11px;
+  font-family: inherit;
+  color: #2b3038;
+  background: #fff;
+  border: 1px solid #c6ccd4;
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.um-mini:hover {
+  background: #f0f4f9;
+  border-color: var(--accent, #0a6ad6);
+}
+
+.um-mini.danger:hover {
+  color: #b3261e;
+  border-color: #b3261e;
+  background: #fdecea;
+}
+
+.um-mini:disabled {
+  opacity: .45;
+  cursor: default;
+  background: #f5f7fa;
+  border-color: #dde2e8;
+}
+
+.um-mini:disabled:hover {
+  background: #f5f7fa;
+  border-color: #dde2e8;
+}
+
+/* ---- 新建 / 编辑表单（覆盖在内容区上）---- */
+
+.um-form {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  background: #fff;
+}
+
+.um-form[hidden] {
+  display: none;
+}
+
+.um-form-head {
+  padding: 9px 12px;
+  font-size: 13px;
+  font-weight: 600;
+  border-bottom: 1px solid #e6e8ec;
+  background: #fafbfc;
+  flex: 0 0 auto;
+}
+
+.um-form-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 12px;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+  gap: 10px 14px;
+  align-content: start;
+}
+
+.um-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.um-field > span {
+  font-size: 11px;
+  color: var(--text-weak, #6b7280);
+}
+
+.um-field input[type="text"],
+.um-field input[type="number"],
+.um-field input[type="password"],
+.um-field select,
+.um-field textarea {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 4px 7px;
+  font-size: 12px;
+  font-family: inherit;
+  color: #2b3038;
+  background: #fff;
+  border: 1px solid #c6ccd4;
+  border-radius: 3px;
+}
+
+.um-field input:focus,
+.um-field select:focus,
+.um-field textarea:focus {
+  outline: none;
+  border-color: var(--accent, #0a6ad6);
+  box-shadow: 0 0 0 2px rgba(10, 106, 214, .12);
+}
+
+.um-field input:disabled,
+.um-field select:disabled {
+  background: #f5f7fa;
+  color: #9aa4b0;
+  cursor: default;
+}
+
+.um-field textarea {
+  resize: vertical;
+  min-height: 66px;
+  font-family: Consolas, "Cascadia Mono", monospace;
+  line-height: 1.5;
+}
+
+.um-field-wide {
+  grid-column: 1 / -1;
+}
+
+.um-field-check {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+}
+
+.um-field-check > span {
+  order: 2;
+}
+
+.um-hint {
+  grid-column: 1 / -1;
+  font-size: 11px;
+  line-height: 1.7;
+  color: var(--text-weak, #6b7280);
+  background: #f7f9fc;
+  border: 1px solid #e6e8ec;
+  border-radius: 3px;
+  padding: 7px 9px;
+}
+
+.um-hint code {
+  padding: 0 3px;
+  font-family: Consolas, "Cascadia Mono", monospace;
+  background: #eef1f5;
+  border-radius: 2px;
+}
+
+.um-form-error {
+  grid-column: 1 / -1;
+  font-size: 12px;
+  color: #b3261e;
+  background: #fdecea;
+  border: 1px solid #f5c6c2;
+  border-radius: 3px;
+  padding: 6px 9px;
+}
+
+.um-form-error[hidden] {
+  display: none;
+}
+
+.um-form-foot {
+  display: flex;
+  gap: 8px;
+  padding: 9px 12px;
+  border-top: 1px solid #e6e8ec;
+  background: #fafbfc;
+  flex: 0 0 auto;
+}

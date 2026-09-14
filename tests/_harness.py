@@ -107,6 +107,58 @@ class Client:
                 return
 
 
+# ---------------------------------------------------------------------------
+# ★ 「默认落在项目根目录」的状态文件
+# ---------------------------------------------------------------------------
+# 这几个配置项的共同点：默认值是**项目根目录下的一个裸文件名**，也就是
+# 真实部署正在用的那一份。用临时配置起的服务如果不把它们改到临时目录，
+# 就会写脏真实部署的数据。
+#
+# 本项目已经因为这个坑出过三次事故：
+#   1. config.json 被测试配置覆盖（端口变随机、口令被换，服务失联）；
+#   2. 真实 user_state.json 里出现了指向临时测试目录的窗口；
+#   3. 真实 desktop_shortcuts.json / audit.log.jsonl 被测试写入。
+# 所以做成一个公用函数 + 一条结构性守卫（见 test_multiuser_state.py 的
+# HarnessStatePathIsolationTests）：**新增一个这样的配置项时，
+# 守卫会先变红，逼你先把它加到这里**。
+STATE_PATH_KEYS = (
+    "user_state_path",
+    "desktop_shortcuts_path",
+    "audit.path",
+)
+
+
+def redirect_state_paths(cfg: dict, work: str) -> None:
+    """
+    把所有「默认落在项目根目录」的状态文件改到 work 目录下。
+
+    ★ 在**调用 prepare() 之前**调到才有效：prepare() 会把相对路径解析成
+    「配置文件所在目录」下的绝对路径，若此时还没有配置文件上下文，
+    它就按代码目录解析成项目根目录的绝对路径，之后子进程会照办。
+    """
+    cfg["user_state_path"] = os.path.join(work, "user_state.json")
+    cfg["desktop_shortcuts_path"] = os.path.join(work, "desktop_shortcuts.json")
+
+    audit_cfg = cfg.get("audit")
+    if not isinstance(audit_cfg, dict):
+        audit_cfg = {}
+    else:
+        audit_cfg = dict(audit_cfg)
+    audit_cfg["path"] = os.path.join(work, "audit.log.jsonl")
+    cfg["audit"] = audit_cfg
+
+
+def state_path_values(cfg: dict) -> dict:
+    """把 STATE_PATH_KEYS 里每一项的实际取值取出来（守卫用）。"""
+    values = {}
+    for key in STATE_PATH_KEYS:
+        if key == "audit.path":
+            values[key] = (cfg.get("audit") or {}).get("path")
+        else:
+            values[key] = cfg.get(key)
+    return values
+
+
 class ServerProcess:
     """
     用真实入口起一个服务子进程。
@@ -143,22 +195,11 @@ class ServerProcess:
         cfg["protected_paths"] = []
         cfg["thumbs"]["cache_dir"] = os.path.join(self.work, "thumbs")
         cfg["office"]["cache_dir"] = os.path.join(self.work, "office")
-        # 界面状态文件也必须落在临时目录里。
-        # ★ 这一项漏掉的后果比其他缓存严重得多：user_state.json 存的是用户
-        #   真实的桌面布局（窗口位置、所在目录、视图模式），它的默认位置在
-        #   **项目根目录**（即真实部署的同一个文件）。不覆盖它的话，测试里
-        #   起的服务器会把真实部署的布局覆盖成测试数据 —— 实测发生过：
-        #   项目根目录的 user_state.json 里出现了一个指向临时测试目录
-        #   （Temp\sstest\root）的命令行窗口，用户下次打开就会看到这个脏窗口。
-        #
-        # ★ desktop_shortcuts_path 是同一类东西，必须一起覆盖：
-        #   这里的 prepare() 是**不带 cfg_path** 调的，所以相对路径会按代码目录
-        #   解析成绝对路径再写进临时配置，子进程看到的就是项目根目录 ——
-        #   于是测试建的快捷方式会真的落到真实桌面上。
-        #   （实测发生过一次：项目根目录冒出 desktop_shortcuts.stu01.json。）
-        cfg["user_state_path"] = os.path.join(self.work, "user_state.json")
-        cfg["desktop_shortcuts_path"] = os.path.join(
-            self.work, "desktop_shortcuts.json")
+        # ★ 所有「默认落在项目根目录」的状态文件都改到临时目录里。
+        #   必须放在 prepare() **之前**（见 redirect_state_paths 的说明）。
+        #   抽成公用函数是因为这里已经出过三次事故，而且 test_fileweb.py
+        #   的那个端到端用例会自己拼配置，同样得调它。
+        redirect_state_paths(cfg, self.work)
         cfg["auth"]["username"] = username
         cfg["auth"]["password_hash"] = security.hash_password(password)
         cfg["auth"]["password"] = ""

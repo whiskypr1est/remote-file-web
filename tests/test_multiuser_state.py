@@ -34,7 +34,8 @@ from fileweb import peruser
 from fileweb import shortcuts as shortcuts_module
 from fileweb import users as users_module
 from fileweb import userstate
-from tests._harness import ServerProcess
+from fileweb import config as config_module
+from tests._harness import STATE_PATH_KEYS, ServerProcess, state_path_values
 
 ADMIN_USER = "teacher"
 ADMIN_PASSWORD = "admin-pass-123"
@@ -232,34 +233,65 @@ class PerUserStorageTests(unittest.TestCase):
 
 class HarnessStatePathIsolationTests(unittest.TestCase):
     """
-    ★ 脚手架必须把**两个**状态文件都指向临时目录。
+    ★ 脚手架必须把**所有**「默认落在项目根目录」的状态文件指向临时目录。
 
-    这条是补上一个真实事故的：新加的 `desktop_shortcuts_path` 一开始没在
-    脚手架里覆盖，而脚手架调 `prepare()` 时**不带 cfg_path**，于是相对路径
-    被解析成代码目录下的绝对路径写进了临时配置 —— 子进程老老实实照做，
-    于是测试建的快捷方式真的落到了项目根目录
-    （实测冒出过 `desktop_shortcuts.stu01.json`）。
+    这条是补上三次同类事故的：
+      * 真实 config.json 被测试配置覆盖（服务换端口、口令失效）；
+      * 真实 user_state.json 里出现指向临时测试目录的窗口；
+      * 真实 desktop_shortcuts.json / audit.log.jsonl 被测试写入。
 
-    这类「测试写脏真实部署」的坑在本项目已经出现过两次，所以值得专门钉一条：
-    只要有人再新增一个默认落在项目根目录的状态文件，这里就会红。
+    根因每次都一样：脚手架调 `prepare()` 时**不带 cfg_path**，于是相对路径
+    被解析成代码目录下的绝对路径写进临时配置，子进程老老实实照做。
     """
 
-    def test_both_state_files_are_redirected_into_the_temp_dir(self):
+    def test_harness_config_points_every_state_file_into_the_temp_dir(self):
         server = ServerProcess([{"id": "main", "name": "main",
                                  "path": tempfile.gettempdir(), "readonly": False}])
         try:
             with open(server.cfg_path, "r", encoding="utf-8") as fh:
                 cfg = json.load(fh)
 
-            for key in ("user_state_path", "desktop_shortcuts_path"):
-                self.assertIn(key, cfg, "配置里应当有 %s" % key)
-                resolved = os.path.abspath(cfg[key])
+            for key, value in state_path_values(cfg).items():
+                self.assertTrue(value, "配置里应当有 %s" % key)
+                resolved = os.path.abspath(str(value))
                 self.assertTrue(
                     resolved.startswith(os.path.abspath(server.work) + os.sep),
                     "★ %s 必须落在临时目录里，实际是 %s（会写脏真实部署）"
                     % (key, resolved))
         finally:
             server.cleanup()
+
+    def test_every_state_path_in_default_config_is_covered(self):
+        """
+        ★★ 结构性守卫：DEFAULT_CONFIG 里凡是「默认指向项目根目录下的
+        JSON/JSONL 文件」的配置项，都必须登记在 _harness.STATE_PATH_KEYS 里。
+
+        这条是让上面那个坑**不会再犯第四次**的关键：新增一个同类配置项时
+        （比如将来的会话表、下载记录），这里会直接变红，逼作者同时把它
+        加进 redirect_state_paths —— 否则「用临时配置起的服务会去写真实部署」
+        这个错误在很长一段时间里都不会有任何症状，直到用户的数据没了。
+        """
+        suspects = set()
+        for key, value in config_module.DEFAULT_CONFIG.items():
+            if isinstance(value, str) and value.endswith((".json", ".jsonl")):
+                suspects.add(key)
+            elif isinstance(value, dict):
+                for sub_key, sub_value in value.items():
+                    if isinstance(sub_value, str) and sub_value.endswith((".json", ".jsonl")):
+                        suspects.add(key + "." + sub_key)
+
+        covered = set(STATE_PATH_KEYS)
+        uncovered = sorted(suspects - covered)
+        self.assertEqual(
+            uncovered, [],
+            "★ 这些配置项的默认值是项目根目录下的状态文件，但没被 "
+            "tests/_harness.redirect_state_paths 覆盖：%s —— "
+            "请把它们加进 STATE_PATH_KEYS 并在 redirect_state_paths 里重定向"
+            % uncovered)
+
+        # 反向检查：登记了却已经不存在，说明守卫本身过期了
+        stale = sorted(covered - suspects)
+        self.assertEqual(stale, [], "STATE_PATH_KEYS 里这些项在 DEFAULT_CONFIG 中已不存在：%s" % stale)
 
 
 class PerUserDesktopApiTests(unittest.TestCase):

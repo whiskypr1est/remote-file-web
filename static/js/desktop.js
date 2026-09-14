@@ -14,6 +14,7 @@ import { openExplorer } from './explorer.js';
 import { openPreview } from './preview.js';
 import { openTerminal } from './terminal.js';
 import { openTaskManager } from './taskmgr.js';
+import { openUserManager } from './usermgr.js';
 import { initSessionState, restoreState } from './sessionstate.js';
 
 const WEEKDAYS = ['星期日', '星期一', '星期二', '星期三', '星期四', '星期五', '星期六'];
@@ -112,6 +113,18 @@ export class Desktop {
    */
   sysmonEnabled() {
     return ((this.info.features || {}).sysmon === true);
+  }
+
+  /**
+   * 用户管理（用户列表 / 在线情况 / 审计日志）是否可用。
+   *
+   * 服务端的 features.users 只有管理员才是 true —— 子用户看不到这个入口。
+   * 不过要清楚：这**不是**安全边界，只是界面便利。子用户拥有全权限命令行，
+   * 真想越权本来就是另一回事（见 MULTIUSER.md 第〇节）。
+   * 真正的拦阻在服务端：每个 /api/users/* 都走 require_admin，返回 403。
+   */
+  usersEnabled() {
+    return ((this.info.features || {}).users === true);
   }
 
   /* =========================================================================
@@ -245,6 +258,17 @@ export class Desktop {
         iconName: 'activity',
         kind: 'builtin',
         onOpen: function () { openTaskManager(self); }
+      });
+    }
+
+    // 用户管理：只有管理员能看到这个入口（服务端 features.users）
+    if (this.usersEnabled()) {
+      items.push({
+        key: 'usermgr',
+        label: '用户管理',
+        iconName: 'user',
+        kind: 'builtin',
+        onOpen: function () { openUserManager(self); }
       });
     }
 
@@ -514,6 +538,14 @@ export class Desktop {
         '<span class="sm-hint">性能 / 进程</span></div>';
     }
 
+    // 用户管理：仅管理员（服务端 features.users 为 true 时才出现）
+    if (this.usersEnabled()) {
+      html += '<div class="sm-item" data-action="usermgr">' +
+        '<span class="sm-ico">' + icon('user') + '</span>' +
+        '<span class="sm-text">用户管理</span>' +
+        '<span class="sm-hint">账号 / 在线 / 审计</span></div>';
+    }
+
     roots.forEach(function (root) {
       html += '<div class="sm-item" data-action="root" data-root="' + ui.escapeHtml(root.id) + '">' +
         '<span class="sm-ico">' + icon('drive') + '</span>' +
@@ -562,6 +594,8 @@ export class Desktop {
           openTerminal(self);
         } else if (action === 'taskmgr') {
           openTaskManager(self);
+        } else if (action === 'usermgr') {
+          openUserManager(self);
         } else if (action === 'root') {
           openExplorer(self, el.dataset.root, '');
         } else if (action === 'password') {

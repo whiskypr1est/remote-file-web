@@ -18,6 +18,14 @@ users.json
 # ---- 每台机器 / 每个人各自的状态（属于部署数据，不属于源码）--------------
 user_state.json
 desktop_shortcuts.json
+# 多用户之后这两类文件**按用户各一份**（user_state.<用户名>.json 等），
+# 显式的两个名字挡不住它们，所以用通配。
+user_state.*.json
+desktop_shortcuts.*.json
+
+# 审计日志：含登录 IP、用户名与时间，属于部署数据；轮转出来的也要挡
+audit.log.jsonl
+audit.log.jsonl.*
 
 # ---- 运行时缓存与临时产物 -------------------------------------------------
 thumb_cache/

@@ -512,6 +512,56 @@ export function putDesktopState(state, keepalive) {
 }
 
 /* ---------------------------------------------------------------------------
+   用户管理（仅管理员，服务端 require_admin 会把普通用户挡在 403）
+   --------------------------------------------------------------------------- */
+
+/** 用户列表：含在线状态、命令行窗口数、进程数、后台任务数 */
+export function listUsers() {
+  return request('GET', '/api/users');
+}
+
+/** 在线情况（比用户列表轻，适合较频繁地刷新） */
+export function listOnline() {
+  return request('GET', '/api/users/online');
+}
+
+/** 最近的审计日志（时间正序，最新在最后） */
+export function readAudit(limit) {
+  return request('GET', '/api/users/audit', {
+    params: { limit: limit || 200 }
+  });
+}
+
+/** 新建用户（初始口令由管理员设定） */
+export function createUser(payload) {
+  return request('POST', '/api/users', { json: payload || {} });
+}
+
+/**
+ * 修改用户（部分更新：只传要改的字段）。
+ * 停用与启用也走这里：updateUser(name, { enabled: false })。
+ */
+export function updateUser(username, patch) {
+  return request('POST', '/api/users/' + encodeURIComponent(username) + '/update', {
+    json: patch || {}
+  });
+}
+
+/** 管理员重设某个用户的口令（他当前的登录会立即失效） */
+export function resetUserPassword(username, password) {
+  return request('POST', '/api/users/' + encodeURIComponent(username) + '/password', {
+    json: { password: password }
+  });
+}
+
+/** 强制某人下线（不改口令、不停用） */
+export function kickUser(username) {
+  return request('POST', '/api/users/' + encodeURIComponent(username) + '/kick', {
+    json: {}
+  });
+}
+
+/* ---------------------------------------------------------------------------
    URL 构造（用于 <img>、<video>、<a download> 等无法带自定义头的场景）
    --------------------------------------------------------------------------- */
 

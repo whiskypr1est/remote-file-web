@@ -39,6 +39,7 @@ if BASE_DIR not in sys.path:
     sys.path.insert(0, BASE_DIR)
 
 from fileweb import deps, fsops, office, security, thumbs              # noqa: E402
+from tests._harness import redirect_state_paths                        # noqa: E402
 from fileweb.routers import fs as fs_router                            # noqa: E402
 
 
@@ -463,6 +464,12 @@ class HttpIntegrationTests(unittest.TestCase):
         cfg["auth"]["lockout_seconds"] = 300
         cfg["auth"]["trusted_proxies"] = []
         cfg["terminal"]["enabled"] = False
+        # ★ 这个类不用脚手架（它要覆盖 uvicorn.run 的 proxy_headers 参数，
+        #   所以必须自己起进程、自己拼配置），于是也得自己把状态文件重定向到
+        #   临时目录 —— prepare() 是在**没有配置文件上下文**的情况下调用的，
+        #   相对路径会被解析成项目根目录下的绝对路径，子进程会照着写。
+        #   实测踩过：真实 audit.log.jsonl 里被灌进了测试的登录记录。
+        redirect_state_paths(cfg, cls.work)
         cfg = config_module.prepare(cfg)
 
         cls.cfg_path = os.path.join(cls.work, "config.json")
