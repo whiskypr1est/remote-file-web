@@ -178,6 +178,14 @@
 
 .um-table {
   width: 100%;
+  /*
+   * ★ min-width 是必须的：用户表有 10 列，其中最后一列要放四个按钮。
+   *   窗口被拖窄时，`table-layout: fixed` 会把每一列等比压扁，结果按钮
+   *   被裁掉、数字挤成两行 —— 看起来像「界面坏了」。
+   *   给一个下限，让窄窗口走横向滚动（外层 .um-table-wrap 已经是 overflow:auto），
+   *   信息还能完整看到。
+   */
+  min-width: 940px;
   border-collapse: collapse;
   table-layout: fixed;
 }
@@ -203,6 +211,12 @@
   font-size: 11px;
   color: #46505c;
   user-select: none;
+}
+
+/* 在线 / 审计两张表列少，下限小一些（同一条规则：宁可横向滚动也不压扁） */
+.um-pane[data-pane="online"] .um-table,
+.um-pane[data-pane="audit"] .um-table {
+  min-width: 620px;
 }
 
 .um-table tbody tr:hover {
