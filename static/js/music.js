@@ -170,6 +170,13 @@ class MusicPlayer {
       list: this.root.querySelector('.ms-list-body'),
       listTitle: this.root.querySelector('.ms-list-title'),
       listMeta: this.root.querySelector('.ms-list-meta'),
+      tableWrap: this.root.querySelector('.ms-table-wrap'),
+      listEmpty: this.root.querySelector('.ms-list-empty'),
+      // 批量操作条（勾选了歌才出现）
+      selbar: this.root.querySelector('.ms-selbar'),
+      selCount: this.root.querySelector('.ms-sel-count'),
+      selRemove: this.root.querySelector('.ms-sel-remove'),
+      checkAll: this.root.querySelector('.ms-check-all'),
       lyrics: this.root.querySelector('.ms-lyrics-body'),
       lyricsTitle: this.root.querySelector('.ms-lyrics-name'),
       search: this.root.querySelector('.ms-search input'),
@@ -202,6 +209,9 @@ class MusicPlayer {
     this.view = { type: 'all', id: '' };
     this.queue = [];            // 当前视图对应的有序歌曲数组
     this.currentId = '';
+    // 批量勾选的歌曲 id（列表里每行一个勾选框）。
+    // ★ 存在的意义：导入 6 首之后要「整批加进歌单」，而不是一首一首点。
+    this.selected = [];
     this.lyrics = { synced: false, lines: [], id: '' };
     this.activeLine = -1;
     this.durations = {};        // id -> 秒（浏览器探测出来的）
@@ -254,8 +264,21 @@ class MusicPlayer {
       '      <span class="ms-list-title">全部歌曲</span>',
       '      <span class="ms-list-meta"></span>',
       '    </div>',
+
+      // 批量操作条：勾选了歌才出现（见 renderSelection）
+      '    <div class="ms-selbar" hidden>',
+      '      <span class="ms-sel-count">已选 0 首</span>',
+      '      <button type="button" class="ms-mini primary" data-act="sel-add">加入歌单</button>',
+      '      <button type="button" class="ms-mini ms-sel-remove" data-act="sel-remove" hidden>移出歌单</button>',
+      '      <button type="button" class="ms-mini danger" data-act="sel-delete">从曲库移除</button>',
+      '      <span class="ms-spacer"></span>',
+      '      <button type="button" class="ms-mini" data-act="sel-invert">反选</button>',
+      '      <button type="button" class="ms-mini" data-act="sel-clear">取消选择</button>',
+      '    </div>',
+
       '    <div class="ms-table-wrap"><table class="ms-table">',
       '      <thead><tr>',
+      '        <th class="ms-check"><input type="checkbox" class="ms-check-all" title="全选 / 取消全选"></th>',
       '        <th style="width:44px">#</th>',
       '        <th>标题</th>',
       '        <th style="width:150px">歌手</th>',
@@ -265,6 +288,11 @@ class MusicPlayer {
       '      </tr></thead>',
       '      <tbody class="ms-list-body"></tbody>',
       '    </table></div>',
+
+      // 空状态：刻意**不**放在表格里。表格有 min-width（520px）且外层可横向滚动，
+      // 一旦中间栏窄于 520px，放在 colspan 单元格里的长提示会被滚出可视区，
+      // 看起来就是「文字被截断」（用户截图里正是这样）。放在外面才能正常折行。
+      '    <div class="ms-list-empty" hidden></div>',
       '  </div>',
 
       '  <div class="ms-lyrics">',
@@ -357,6 +385,13 @@ class MusicPlayer {
 
     // 列表 / 歌单 / 歌词都靠委托，重绘时不必重新绑
     this.$.list.addEventListener('click', function (ev) {
+      // ★ 勾选框必须最先判断：它在 <tr data-song> **里面**，落到下面那一条就会
+      //   「一点复选框就开始放歌」。勾选状态由下面的 change 事件处理。
+      const cell = ev.target.closest ? ev.target.closest('.ms-check') : null;
+      if (cell) {
+        ev.stopPropagation();
+        return;
+      }
       const row = ev.target.closest ? ev.target.closest('[data-row-act]') : null;
       if (row) {
         ev.stopPropagation();
@@ -375,17 +410,61 @@ class MusicPlayer {
       }
     });
 
+    // 勾选框（行内 + 表头全选）统一在根上用 change 委托：
+    // 表头那一行不在 .ms-list-body 里，绑在 tbody 上会漏掉它。
+    this.root.addEventListener('change', function (ev) {
+      const target = ev.target;
+      if (!target || !target.classList) {
+        return;
+      }
+      if (target.classList.contains('ms-row-check')) {
+        self.toggleSelect(target.dataset.song, target.checked);
+        return;
+      }
+      if (target.classList.contains('ms-check-all')) {
+        self.selectAllVisible(target.checked);
+      }
+    });
+
     this.$.sidebar.addEventListener('click', function (ev) {
+      // ★ 顺序不能反：歌单上的「重命名 / 删除」按钮长在 .ms-side-item[data-view]
+      //   **里面**。先查 [data-view] 会把这一次点击当成「切换视图」并 return，
+      //   于是那两个按钮**永远点不动** —— 用户看到的就是「歌单删不掉、也改不了名」。
+      //   （tests/test_frontend_wiring.py 里有闸门盯着这个顺序，别调换。）
+      const act = ev.target.closest ? ev.target.closest('[data-pl-act]') : null;
+      if (act) {
+        ev.stopPropagation();
+        self.playlistAction(act.dataset.plAct, act.dataset.id);
+        return;
+      }
       const item = ev.target.closest ? ev.target.closest('[data-view]') : null;
       if (item) {
         self.switchView(item.dataset.view, item.dataset.id || '');
+      }
+    });
+
+    // 歌单上点右键也能改名/删除。
+    // 那两个小图标只在鼠标移上去时才出现，光看界面很容易以为「没这个功能」，
+    // 所以再给一个大家更习惯的入口。其它地方不拦截，保留浏览器默认菜单。
+    this.$.sidebar.addEventListener('contextmenu', function (ev) {
+      const item = ev.target.closest ? ev.target.closest('[data-view="playlist"]') : null;
+      if (!item) {
         return;
       }
-      const menu = ev.target.closest ? ev.target.closest('[data-pl-act]') : null;
-      if (menu) {
-        ev.stopPropagation();
-        self.playlistAction(menu.dataset.plAct, menu.dataset.id);
-      }
+      ev.preventDefault();
+      const id = item.dataset.id;
+      ui.showContextMenu(ev.clientX, ev.clientY, [
+        {
+          label: '重命名歌单',
+          iconName: 'pencil',
+          onClick: function () { self.playlistAction('rename', id); }
+        },
+        {
+          label: '删除歌单',
+          iconName: 'trash',
+          onClick: function () { self.playlistAction('delete', id); }
+        }
+      ]);
     });
 
     this.$.lyrics.addEventListener('click', function (ev) {
@@ -513,6 +592,12 @@ class MusicPlayer {
       case 'picker-close':
       case 'picker-cancel': this.closePicker(); break;
       case 'picker-import': this.doImport(); break;
+      // 批量勾选后的操作
+      case 'sel-add': this.batchAddToPlaylist(el); break;
+      case 'sel-remove': this.batchRemoveFromPlaylist(); break;
+      case 'sel-delete': this.batchDeleteSongs(); break;
+      case 'sel-invert': this.invertSelection(); break;
+      case 'sel-clear': this.clearSelection(); break;
       default: break;
     }
     void el;
@@ -532,6 +617,8 @@ class MusicPlayer {
       self.$.volume.value = String(Math.round((self.prefs.volume || 0) * 100));
       self.applyVolume();
       self.applyMode();
+      // 勾选状态里可能有已经被删掉的歌（尤其「批量移除」之后），先清干净
+      self.pruneSelection();
       self.renderSidebar();
       self.renderList();
       self.renderLyricsPanel();
@@ -676,9 +763,15 @@ class MusicPlayer {
     let html = '';
     list.forEach(function (song, index) {
       const playing = song.id === self.currentId;
+      const picked = self.selected.indexOf(song.id) >= 0;
       const duration = self.durations[song.id];
-      html += '<tr' + (playing ? ' class="playing"' : '') +
+      const rowClass = [playing ? 'playing' : '', picked ? 'picked' : '']
+        .filter(Boolean).join(' ');
+      html += '<tr' + (rowClass ? ' class="' + rowClass + '"' : '') +
         ' data-song="' + ui.escapeHtml(song.id) + '">' +
+        '<td class="ms-check"><input type="checkbox" class="ms-row-check"' +
+          (picked ? ' checked' : '') +
+          ' data-song="' + ui.escapeHtml(song.id) + '" title="勾选后可批量操作"></td>' +
         '<td class="ms-num">' + (playing
           ? '<span class="ms-playing">' + icon('volume') + '</span>'
           : (index + 1)) + '</td>' +
@@ -702,16 +795,254 @@ class MusicPlayer {
         '</tr>';
     });
 
-    if (!html) {
-      html = '<tr><td colspan="6" class="ms-empty">' +
-        (query ? '没有匹配的歌曲'
-               : (this.view.type === 'playlist'
-                  ? '这个歌单还是空的：在「全部歌曲」里点「加入歌单」'
-                  : '曲库是空的：点左上角「导入歌曲」把歌放进来')) +
-        '</td></tr>';
+    this.$.list.innerHTML = html;
+
+    // 空状态放在表格外面（表格有 min-width，长提示会被横向滚出可视区）
+    const empty = !list.length;
+    this.$.listEmpty.hidden = !empty;
+    this.$.tableWrap.hidden = empty;
+    if (empty) {
+      this.$.listEmpty.innerHTML = query
+        ? '没有匹配的歌曲'
+        : (this.view.type === 'playlist'
+          ? '这个歌单还是空的。<br>去「全部歌曲」勾选要的歌，再点上面的「加入歌单」。'
+          : '曲库是空的。<br>点左上角「导入歌曲」把歌放进来。');
     }
 
-    this.$.list.innerHTML = html;
+    // 表头全选框：只在「全都勾上了」时打勾，勾一半显示为 indeterminate
+    const pickedVisible = list.filter(function (song) {
+      return self.selected.indexOf(song.id) >= 0;
+    }).length;
+    this.$.checkAll.checked = !empty && pickedVisible === list.length;
+    this.$.checkAll.indeterminate = !empty && pickedVisible > 0 && pickedVisible < list.length;
+
+    this.renderSelection();
+  }
+
+  /* -- 批量勾选 ----------------------------------------------------------- */
+
+  /** 刷新批量操作条。没勾任何歌时整条隐藏。 */
+  renderSelection() {
+    const count = this.selected.length;
+    this.$.selbar.hidden = count === 0;
+    this.$.selCount.textContent = '已选 ' + count + ' 首';
+    // 「移出歌单」只在歌单视图里有意义（从曲库移除是另一回事）
+    this.$.selRemove.hidden = this.view.type !== 'playlist';
+  }
+
+  toggleSelect(songId, on) {
+    if (!songId) {
+      return;
+    }
+    const index = this.selected.indexOf(songId);
+    const want = on === undefined ? index < 0 : !!on;
+    if (want && index < 0) {
+      this.selected.push(songId);
+    } else if (!want && index >= 0) {
+      this.selected.splice(index, 1);
+    }
+    this.renderList();
+  }
+
+  /** 表头全选：只作用于**当前列表里看得见的**那些（搜索/歌单视图下也是这个口径）。 */
+  selectAllVisible(on) {
+    const visible = this.visibleSongs();
+    if (on) {
+      const self = this;
+      visible.forEach(function (song) {
+        if (self.selected.indexOf(song.id) < 0) {
+          self.selected.push(song.id);
+        }
+      });
+    } else {
+      const showIds = visible.map(function (song) { return song.id; });
+      this.selected = this.selected.filter(function (id) {
+        return showIds.indexOf(id) < 0;
+      });
+    }
+    this.renderList();
+  }
+
+  invertSelection() {
+    const self = this;
+    const visible = this.visibleSongs();
+    visible.forEach(function (song) {
+      const index = self.selected.indexOf(song.id);
+      if (index >= 0) {
+        self.selected.splice(index, 1);
+      } else {
+        self.selected.push(song.id);
+      }
+    });
+    this.renderList();
+  }
+
+  clearSelection() {
+    this.selected = [];
+    this.renderList();
+  }
+
+  /** 丢掉已经不在曲库里的 id（删歌、换库之后调用）。 */
+  pruneSelection() {
+    const self = this;
+    this.selected = this.selected.filter(function (id) {
+      return !!self.songById(id);
+    });
+  }
+
+  /**
+   * 对选中的每一首依次执行同一个动作。
+   *
+   * 串行而不是 Promise.all：勾 40 首一次打 40 个请求，服务端要同时开 40 个
+   * 线程去改同一份歌单状态；串行只是慢一点（局域网上 40 首不到一秒），
+   * 不会把服务端和自己都卡住。这也与「时长探测串行」同一个取舍。
+   */
+  runOnSelection(one, done) {
+    const self = this;
+    const ids = this.selected.slice();
+    let index = 0;
+    let failed = 0;
+    let firstError = null;
+
+    const step = function () {
+      if (index >= ids.length || self.closed) {
+        done(failed, firstError);
+        return;
+      }
+      const id = ids[index];
+      index += 1;
+      self.setStatus('正在处理 ' + index + '/' + ids.length + '…');
+      one(id).then(step).catch(function (err) {
+        failed += 1;
+        if (!firstError) {
+          firstError = err;
+        }
+        step();
+      });
+    };
+    step();
+  }
+
+  /** 批量加入歌单：先挑歌单（或用右键菜单那个现成组件），再逐首加。 */
+  batchAddToPlaylist(ev) {
+    const self = this;
+    if (!this.selected.length) {
+      return;
+    }
+
+    const addAll = function (playlistId, playlistName) {
+      const total = self.selected.length;
+      self.runOnSelection(function (id) {
+        return api.musicPlaylistSong(playlistId, id, 'add');
+      }, function (failed) {
+        const okCount = total - failed;
+        ui.toast('已把 ' + okCount + ' 首加入「' + playlistName + '」' +
+          (failed ? '，' + failed + ' 首失败' : ''), failed ? 'warn' : 'success');
+        self.setStatus('');
+        self.load(true).catch(function () { /* 已经在界面上提示过了 */ });
+      });
+    };
+
+    if (!this.playlists.length) {
+      ui.showConfirm('还没有歌单', '你还没有创建歌单，现在创建一个并把选中的歌放进去吗？',
+        { okText: '创建' })
+        .then(function (ok) {
+          if (!ok) {
+            return;
+          }
+          ui.showPrompt('新建歌单', '给歌单起个名字', '', { okText: '创建' })
+            .then(function (name) {
+              const clean = String(name || '').trim();
+              if (!clean) {
+                return;
+              }
+              api.musicCreatePlaylist(clean).then(function (data) {
+                // 新建接口回的是创建后的歌单（含 id），拿它直接开始加
+                const created = (data && data.playlist) || null;
+                return self.load(true).then(function () {
+                  if (created && created.id) {
+                    addAll(created.id, created.name || clean);
+                  }
+                });
+              }).catch(function (err) {
+                ui.toast((err && err.message) || '创建失败', 'error');
+              });
+            });
+        });
+      return;
+    }
+
+    const items = this.playlists.map(function (playlist) {
+      return {
+        label: '加入「' + playlist.name + '」（' + playlist.songs.length + ' 首）',
+        iconName: 'music',
+        onClick: function () { addAll(playlist.id, playlist.name); }
+      };
+    });
+    const x = ev ? ev.clientX : 260;
+    const y = ev ? ev.clientY : 200;
+    ui.showContextMenu(x, y, items);
+  }
+
+  /** 批量从当前歌单移出。 */
+  batchRemoveFromPlaylist() {
+    const self = this;
+    if (this.view.type !== 'playlist' || !this.selected.length) {
+      return;
+    }
+    const playlistId = this.view.id;
+    const playlistName = this.playlistName(playlistId);
+    const total = this.selected.length;
+    ui.showConfirm('移出歌单',
+      '把选中的 ' + total + ' 首从「' + playlistName + '」移出吗？（歌还在曲库里）')
+      .then(function (ok) {
+        if (!ok) {
+          return;
+        }
+        self.runOnSelection(function (id) {
+          return api.musicPlaylistSong(playlistId, id, 'remove');
+        }, function (failed) {
+          ui.toast('已移出 ' + (total - failed) + ' 首' +
+            (failed ? '，' + failed + ' 首失败' : ''), failed ? 'warn' : 'success');
+          self.setStatus('');
+          self.load(true).catch(function () { /* 已经提示过了 */ });
+        });
+      });
+  }
+
+  /** 批量从曲库删除（连同歌词；导入时复制进来的源文件不受影响）。 */
+  batchDeleteSongs() {
+    const self = this;
+    if (!this.selected.length) {
+      return;
+    }
+    const total = this.selected.length;
+    ui.showConfirm('从曲库移除',
+      '把选中的 ' + total + ' 首从音乐库移除吗？（连歌词一起删；' +
+      '导入时复制进来的源文件不受影响）', { danger: true, okText: '移除' })
+      .then(function (ok) {
+        if (!ok) {
+          return;
+        }
+        // 正在播的那首被删掉时，要把播放器一起收干净
+        const playingDeleted = self.selected.indexOf(self.currentId) >= 0;
+        self.runOnSelection(function (id) {
+          return api.musicDelete(id);
+        }, function (failed) {
+          if (playingDeleted) {
+            self.$.audio.pause();
+            self.$.audio.removeAttribute('src');
+            self.currentId = '';
+            self.renderNowPlaying();
+            self.renderLyricsPanel();
+          }
+          ui.toast('已移除 ' + (total - failed) + ' 首' +
+            (failed ? '，' + failed + ' 首失败' : ''), failed ? 'warn' : 'success');
+          self.setStatus('');
+          self.selected = [];
+          self.load(true).catch(function () { /* 已经提示过了 */ });
+        });
+      });
   }
 
   playlistName(id) {
@@ -1212,11 +1543,16 @@ class MusicPlayer {
 
     let done = 0;
     let failed = 0;
+    const uploadedIds = [];
 
     const step = function (index) {
       if (index >= ok.length || self.closed) {
         self.setStatus('上传完成：成功 ' + done + ' 首' +
           (failed ? '，失败 ' + failed + ' 首' : ''));
+        // 与导入同样：刚上传的自动勾上，接着就能整批加进歌单
+        if (uploadedIds.length) {
+          self.selected = uploadedIds.slice();
+        }
         self.load(true).catch(function () { /* 已经提示过了 */ });
         return;
       }
@@ -1226,8 +1562,12 @@ class MusicPlayer {
       api.musicUpload(file, function (loaded, total) {
         const percent = total ? Math.round((loaded / total) * 100) : 0;
         self.setStatus('正在上传 ' + file.name + ' ' + percent + '%');
-      }).then(function () {
+      }).then(function (data) {
         done++;
+        // 服务端回的是**落盘后的真实文件名**（重名会改名），必须用它
+        if (data && data.song && data.song.id) {
+          uploadedIds.push(data.song.id);
+        }
       }).catch(function (err) {
         failed++;
         ui.toast('「' + file.name + '」上传失败：' +
@@ -1405,6 +1745,18 @@ class MusicPlayer {
         });
       }
       self.closePicker();
+      // ★ 刚导入的那几首**自动勾上**：用户导入一批歌，下一步几乎一定是
+      //   「把它们放进某个歌单」，这样他只需要再点一下「加入歌单」，
+      //   而不是回头在几十首里一首首找。用服务端回的 id 而不是源文件名 ——
+      //   重名时服务端会把文件改名（歌.mp3 → 歌(1).mp3），拿名字会对不上。
+      const importedIds = (data.imported || []).map(function (item) {
+        return item && item.id;
+      }).filter(Boolean);
+      if (importedIds.length) {
+        self.selected = importedIds.filter(function (id, index) {
+          return importedIds.indexOf(id) === index;
+        });
+      }
       self.load(true).catch(function () { /* 已经提示过了 */ });
     }).catch(function (err) {
       ui.toast((err && err.message) || '导入失败', 'error');

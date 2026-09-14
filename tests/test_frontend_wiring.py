@@ -397,5 +397,68 @@ class FrontendCrossModuleCallTests(unittest.TestCase):
                          + "\n  ".join(offenders))
 
 
+class NestedClickOrderTests(unittest.TestCase):
+    """
+    委托点击处理里，**嵌套的元素必须先判断内层**。
+
+    这一条是从用户反馈里来的：「歌单一经创建就删不掉、也改不了名」。
+    接口、按钮、处理器其实全都在，坏的是侧栏点击处理器的**判断顺序**：
+
+        const item = ev.target.closest('[data-view]');      // ← 先查外层
+        if (item) { switchView(...); return; }              // ← 直接 return
+        const act = ev.target.closest('[data-pl-act]');     // ← 永远走不到
+        if (act) { playlistAction(...); }
+
+    重命名/删除按钮长在 .ms-side-item[data-view] **里面**，于是点它们只会
+    切换一下视图，什么都不会发生 —— 而且两个分支的代码看起来都对，
+    node --check、接口测试、其它静态闸门全绿。
+
+    同类的还有歌曲列表：勾选框在 <tr data-song> 里面，若「点整行 = 播放」
+    那一句排在前面，点一下勾选框就会开始放歌（批量勾选直接没法用）。
+    """
+
+    @staticmethod
+    def _handler_body(src: str, opener: str) -> str:
+        """
+        取出某个委托处理器的函数体（到该 addEventListener 的收尾 }); 为止）。
+
+        ★ 必须先把注释抹掉再比对顺序：代码上方的注释里往往**正提到**这两个选择器
+        （「先查 [data-view] 会把点击吞掉…」），不抹掉的话注释会先被匹配到，
+        闸门就会对着一段说明文字报错。（本文件里 _code_lines 那条也是同样的道理。）
+        """
+        start = src.index(opener)
+        end = src.index("\n    });", start)
+        body = src[start:end]
+        body = re.sub(r"/\*.*?\*/", "", body, flags=re.S)
+        body = re.sub(r"//[^\n]*", "", body)
+        return body
+
+    def test_playlist_actions_are_checked_before_view_switch(self):
+        body = self._handler_body(_read("music.js"),
+                                  "this.$.sidebar.addEventListener('click'")
+        act = body.find("[data-pl-act]")
+        view = body.find("[data-view]")
+        self.assertGreater(act, -1, "侧栏不再处理 [data-pl-act]，歌单就改不了名/删不掉了")
+        self.assertGreater(view, -1, "侧栏不再处理 [data-view]")
+        self.assertLess(
+            act, view,
+            "★ 侧栏点击处理器里 [data-pl-act] 必须排在 [data-view] **前面**："
+            "重命名/删除按钮在 [data-view] 元素内部，顺序反了它们就永远点不动"
+            "（症状：歌单一经创建就删不掉、也改不了名）。"
+            "若你把两者拆成了两个监听器，请确认内层那个先注册。")
+
+    def test_row_checkbox_is_checked_before_row_click_plays(self):
+        body = self._handler_body(_read("music.js"),
+                                  "this.$.list.addEventListener('click'")
+        check = body.find("'.ms-check'")
+        row = body.find("tr[data-song]")
+        self.assertGreater(check, -1, "列表点击处理器里不再排除勾选框所在的单元格")
+        self.assertGreater(row, -1, "列表点击处理器里不再处理整行点击")
+        self.assertLess(
+            check, row,
+            "★ 勾选框在 <tr data-song> 内部，排除它的判断必须排在"
+            "「点整行=播放」之前，否则一点勾选框就开始放歌。")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -259,6 +259,16 @@
   display: inline-flex;
 }
 
+/*
+  ★ 当前选中的歌单**始终**显示操作按钮。
+  只靠 hover 显示的话，用户截个图或者手不在那一行上时，界面上根本看不出
+  歌单能改名/删除（实际就发生过：有人反馈「歌单一经创建就删不掉也改不了名」，
+  而按钮其实一直都在，只是从没露过面）。右键菜单是第二个入口。
+*/
+.ms-side-item.active .ms-side-acts {
+  display: inline-flex;
+}
+
 .ms-side-act {
   display: inline-flex;
   padding: 1px;
@@ -394,11 +404,93 @@
   background: #34a853;
 }
 
-.ms-empty {
-  padding: 22px 12px;
+/*
+  空状态：**不在表格里**。
+  表格有 min-width: 520px 且外层可横向滚动，一旦中间栏窄于 520px，
+  写在 colspan 单元格里的长提示会被滚出可视区 —— 用户看到的就是
+  「文字被截断」。放在表格外面才能按容器宽度正常折行。
+  （这里取代了早先那条 .ms-empty：它就是随表格一起被滚出去的那个。）
+*/
+.ms-list-empty {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 24px 18px;
   text-align: center;
+  line-height: 1.9;
+  font-size: 12px;
   color: var(--text-weak, #6b7280);
-  white-space: normal;
+}
+
+.ms-list-empty[hidden] {
+  display: none;
+}
+
+/* ---- 批量勾选 ---- */
+
+/* 勾选框那一列：不要跟着表格的 td 内边距一起变大 */
+.ms-table th.ms-check,
+.ms-table td.ms-check {
+  width: 34px;
+  padding: 0 0 0 10px;
+  text-align: left;
+}
+
+.ms-row-check,
+.ms-check-all {
+  width: 13px;
+  height: 13px;
+  margin: 0;
+  vertical-align: middle;
+  cursor: pointer;
+  accent-color: var(--accent, #0a6ad6);
+}
+
+/* 勾上的行给一层浅蓝底，扫一眼就知道选了哪几首 */
+.ms-table tr.picked {
+  background: #eef4fd;
+}
+
+.ms-table tr.picked:hover {
+  background: #e6effb;
+}
+
+/* 批量操作条：勾了歌才出现，紧贴在列表标题下面 */
+.ms-selbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  padding: 6px 10px;
+  background: #f2f7ff;
+  border-bottom: 1px solid #dbe7fa;
+}
+
+.ms-selbar[hidden] {
+  display: none;
+}
+
+.ms-sel-count {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent, #0a6ad6);
+  margin-right: 2px;
+}
+
+.ms-mini.primary {
+  color: #fff;
+  background: var(--accent, #0a6ad6);
+  border-color: var(--accent, #0a6ad6);
+}
+
+.ms-mini.primary:hover {
+  filter: brightness(1.08);
+  background: var(--accent, #0a6ad6);
+  border-color: var(--accent, #0a6ad6);
 }
 
 /* 右：歌词 */
