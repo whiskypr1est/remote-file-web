@@ -231,11 +231,18 @@ class PhotosApp {
       });
 
       this.$sort.value = this.prefs.sort;
+
+      /* ★ 必须先收掉 loading 再渲染。
+         renderGrid 里有一道「加载中就先不画」的闸门，而这个 render() 是在
+         同一个 try 里调的 —— 反过来写的话，网格永远是空的：
+         侧栏数字、统计全都对，主区却一直停在「正在读取照片库…」。
+         这个 bug 骗过了接口测试、静态闸门和纯逻辑用例，只有真的在浏览器里
+         打开一次才看得见（第一版就是这样）。 */
+      this.loading = false;
       this.render();
     } catch (err) {
-      this.renderStatus('读取照片库失败：' + ((err && err.message) || err), true);
-    } finally {
       this.loading = false;
+      this.renderStatus('读取照片库失败：' + ((err && err.message) || err), true);
     }
   }
 
