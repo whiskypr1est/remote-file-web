@@ -8,6 +8,7 @@ tests/js/*.test.mjs 是一批**不依赖浏览器、也不依赖 Electron** 的�
     nowplaying.test.mjs                 网页播放器的上报模块（歌词上报）
     desktop-lyrics-client.test.mjs      桌面歌词悬浮窗的连接层（重连/轮询/退避）
     desktop-lyrics-overlay.test.mjs     桌面歌词悬浮窗的渲染逻辑（时间与歌词行对应）
+    photos-timeline.test.mjs            照片时间轴的分组/排序/筛选（按时间轴归类的规则）
 
 这里只负责把它们接进 unittest，让「跑一遍测试」就能覆盖前端逻辑。
 
@@ -52,6 +53,7 @@ EXPECTED_FILES = {
     "nowplaying.test.mjs",
     "desktop-lyrics-client.test.mjs",
     "desktop-lyrics-overlay.test.mjs",
+    "photos-timeline.test.mjs",
 }
 
 # 每个文件至少要有这么多用例。设下限而不是精确数字：精确数字会让「加一个用例」

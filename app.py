@@ -66,6 +66,7 @@ from fileweb.routers import fs as fs_router
 from fileweb.routers import jobs as jobs_router
 from fileweb.routers import lyrics as lyrics_router
 from fileweb.routers import music as music_router
+from fileweb.routers import photos as photos_router
 from fileweb.routers import sysmon as sysmon_router
 from fileweb.routers import system as system_router
 from fileweb.routers import terminal as terminal_router
@@ -463,6 +464,7 @@ def create_app(cfg=None) -> FastAPI:
     app.include_router(jobs_router.router)
     app.include_router(users_router.router)
     app.include_router(music_router.router)
+    app.include_router(photos_router.router)
     # ★ 桌面歌词：路由在 /api 之外（/now-playing、/ws/lyrics）。
     #   悬浮窗是独立进程、没有会话 Cookie，必须在无人登录浏览器时也能连上，
     #   所以它不走登录校验 —— 取舍与安全说明见 fileweb/routers/lyrics.py 头部。

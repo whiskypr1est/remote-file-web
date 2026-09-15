@@ -636,6 +636,115 @@ export function musicStreamUrl(id) {
 }
 
 /* ---------------------------------------------------------------------------
+   照片（时间轴相册）
+   --------------------------------------------------------------------------- */
+
+/** 整库一次取全：照片 + 统计 + 相册 + 浏览偏好 */
+export function photosLibrary() {
+  return request('GET', '/api/photos/library');
+}
+
+/** 单张详情（EXIF 原值 + 用户覆盖值 + 最终有效值） */
+export function photoItem(id) {
+  return request('GET', '/api/photos/item', { params: { id: id } });
+}
+
+/**
+ * 就地索引选中的文件/文件夹。
+ * ★ 与音乐不同：这里**不复制**文件，只记录位置与元数据。
+ * @param {string} root  根标识
+ * @param {string[]} paths 该根下的相对路径（空串表示根目录本身）
+ * @param {boolean} background true = 立刻返回 job_id，进度在任务面板里看
+ */
+export function photosImport(root, paths, background) {
+  return request('POST', '/api/photos/import', {
+    json: { root: root, paths: paths || [], background: !!background }
+  });
+}
+
+/** 重扫：核对、按指纹找回被移动的文件、发现新增 */
+export function photosRescan() {
+  return request('POST', '/api/photos/rescan', { json: {} });
+}
+
+/** 已纳入索引的目录清单 */
+export function photosSources() {
+  return request('GET', '/api/photos/sources');
+}
+
+/** 把一个目录移出相册（不会删除任何照片文件） */
+export function photosForget(root, path) {
+  return request('POST', '/api/photos/forget', { json: { root: root, path: path } });
+}
+
+/**
+ * 改一批照片。
+ * patch 里出现的键才会被改：taken_at / place / tags / rating / caption
+ */
+export function photosEdit(ids, patch) {
+  return request('POST', '/api/photos/edit', {
+    json: { ids: ids || [], patch: patch || {} }
+  });
+}
+
+/** 批量平移时间（保留相对先后）；setTo 给了就是「统一设为同一个时间」 */
+export function photosBatchTime(ids, opts) {
+  const body = { ids: ids || [] };
+  if (opts && opts.setTo) {
+    body.set_to = opts.setTo;
+  } else if (opts && opts.deltaSeconds != null) {
+    body.delta_seconds = opts.deltaSeconds;
+  } else if (opts && opts.deltaHours != null) {
+    body.delta_hours = opts.deltaHours;
+  }
+  return request('POST', '/api/photos/batch/time', { json: body });
+}
+
+/** 撤销最近一次编辑 */
+export function photosUndo() {
+  return request('POST', '/api/photos/undo', { json: {} });
+}
+
+export function photosCreateAlbum(payload) {
+  return request('POST', '/api/photos/albums', { json: payload || {} });
+}
+
+export function photosRenameAlbum(id, name) {
+  return request('POST', '/api/photos/albums/rename', { json: { id: id, name: name } });
+}
+
+export function photosDeleteAlbum(id) {
+  return request('POST', '/api/photos/albums/delete', { json: { id: id } });
+}
+
+/** 往手动相册里加照片 / 移出照片 */
+export function photosAlbumItems(id, ids, action) {
+  return request('POST', '/api/photos/albums/items', {
+    json: { id: id, ids: ids || [], action: action || 'add' }
+  });
+}
+
+/** 保存浏览偏好（时间轴粒度 / 排序） */
+export function photosSavePrefs(patch) {
+  return request('POST', '/api/photos/prefs', { json: patch || {} });
+}
+
+/**
+ * 画廊缩略图 URL。
+ *
+ * v 参数只是为了让浏览器在图片被换掉后重新取 —— 服务端真正的缓存失效
+ * 靠「文件 mtime + 大小 + 尺寸」组成的缓存键。
+ */
+export function photoThumbUrl(id, box, version) {
+  return buildUrl('/api/photos/thumb', { id: id, box: box, v: version });
+}
+
+/** 原图 URL（支持 Range；download=1 时作为附件下载） */
+export function photoRawUrl(id, download) {
+  return buildUrl('/api/photos/raw', { id: id, download: download ? '1' : undefined });
+}
+
+/* ---------------------------------------------------------------------------
    URL 构造（用于 <img>、<video>、<a download> 等无法带自定义头的场景）
    --------------------------------------------------------------------------- */
 

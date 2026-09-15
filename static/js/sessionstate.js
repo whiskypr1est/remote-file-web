@@ -41,6 +41,7 @@ import { openPreview } from './preview.js';
 import { openEditor } from './editor.js';
 import { restoreTerminal } from './terminal.js';
 import { openMusic } from './music.js';
+import { openPhotos } from './photos.js';
 
 /** 状态文档的版本号。格式一旦不兼容就 +1，老文档会被整体丢弃。 */
 export const STATE_VERSION = 1;
@@ -338,6 +339,12 @@ function windowKind(record) {
   // 同一件事不存两份，免得两边对不上。
   if (classes && classes.contains('music')) {
     return 'music';
+  }
+  // 照片（时间轴相册）：photos.js 给自己挂 .photos 类名。
+  // 同样只存几何信息 —— 时间轴粒度、排序这些浏览偏好由服务端按用户记着
+  // （/api/photos/prefs），窗口还原后它会自己接上。
+  if (classes && classes.contains('photos')) {
+    return 'photos';
   }
   return 'unknown';
 }
@@ -750,8 +757,36 @@ async function restoreOne(item) {
   if (kind === 'music') {
     return restoreMusic(item);
   }
+  if (kind === 'photos') {
+    return restorePhotos(item);
+  }
 
   return false;
+}
+
+/**
+ * 还原照片窗口：走 openPhotos()，和手动打开完全同一条路径。
+ *
+ * ★ 与音乐窗口同样的判断：功能可能在这之后被关掉了
+ * （config.json 的 photos.enabled），存档里还留着这个窗口，
+ * 但打开只会得到一个「每个接口都 403」的空壳，不如干脆不还原 ——
+ * 与「关掉后开始菜单里没有入口」保持一致。
+ */
+function restorePhotos(item) {
+  const features = (desktop && desktop.info && desktop.info.features) || {};
+  if (features.photos !== true) {
+    return Promise.resolve(false);
+  }
+
+  const record = openPhotos(desktop, { ...geometryOf(item), silent: true });
+  if (!record) {
+    return Promise.resolve(false);
+  }
+
+  applyGeometry(record, geometryOf(item), false);
+  restoreWindowFlags(record, item);
+
+  return Promise.resolve(!!wm.get(record.id));
 }
 
 /**

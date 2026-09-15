@@ -171,6 +171,10 @@ STATE_PATH_TARGETS = {
     "audit.path": "audit.log.jsonl",
     "music.state_path": "music_state.json",
     "music.library_dir": "music",
+    # ★ 照片（时间轴相册）：编辑数据与索引缓存都是**分开的文件**，
+    #   两个都要重定向 —— 漏掉任何一个，用临时配置起的测试服务都会去写真实部署。
+    "photos.state_path": "photos_state.json",
+    "photos.index_path": "photo_index.json",
     "thumbs.cache_dir": "thumbs",
     "office.cache_dir": "office",
 }

@@ -16,6 +16,7 @@ import { openTerminal } from './terminal.js';
 import { openTaskManager } from './taskmgr.js';
 import { openUserManager } from './usermgr.js';
 import { openMusic } from './music.js';
+import { openPhotos } from './photos.js';
 import { initSessionState, restoreState } from './sessionstate.js';
 
 const WEEKDAYS = ['星期日', '星期一', '星期二', '星期三', '星期四', '星期五', '星期六'];
@@ -136,6 +137,17 @@ export class Desktop {
    */
   musicEnabled() {
     return ((this.info.features || {}).music === true);
+  }
+
+  /**
+   * 照片（时间轴相册）是否可用。
+   *
+   * 由服务端 features.photos 决定（config.json 的 photos.enabled）。
+   * 同样只认明确的 true：界面藏入口与接口返回 403 必须是同一个判断，
+   * 否则用户会看到「入口在、点开就报错」。
+   */
+  photosEnabled() {
+    return ((this.info.features || {}).photos === true);
   }
 
   /* =========================================================================
@@ -291,6 +303,17 @@ export class Desktop {
         iconName: 'music',
         kind: 'builtin',
         onOpen: function () { openMusic(self); }
+      });
+    }
+
+    // 照片（时间轴相册）：同样人人可用，各人有各人的索引与编辑
+    if (this.photosEnabled()) {
+      items.push({
+        key: 'photos',
+        label: '照片',
+        iconName: 'photos',
+        kind: 'builtin',
+        onOpen: function () { openPhotos(self); }
       });
     }
 
@@ -586,6 +609,14 @@ export class Desktop {
         '<span class="sm-hint">歌单 / 歌词</span></div>';
     }
 
+    // 照片（时间轴相册）：入口由服务端 features.photos 决定
+    if (this.photosEnabled()) {
+      html += '<div class="sm-item" data-action="photos">' +
+        '<span class="sm-ico">' + icon('photos') + '</span>' +
+        '<span class="sm-text">照片</span>' +
+        '<span class="sm-hint">时间轴 / 编辑时间地点</span></div>';
+    }
+
     roots.forEach(function (root) {
       html += '<div class="sm-item" data-action="root" data-root="' + ui.escapeHtml(root.id) + '">' +
         '<span class="sm-ico">' + icon('drive') + '</span>' +
@@ -638,6 +669,8 @@ export class Desktop {
           openUserManager(self);
         } else if (action === 'music') {
           openMusic(self);
+        } else if (action === 'photos') {
+          openPhotos(self);
         } else if (action === 'root') {
           openExplorer(self, el.dataset.root, '');
         } else if (action === 'password') {
@@ -834,6 +867,15 @@ export class Desktop {
           label: '打开任务管理器',
           iconName: 'activity',
           onClick: function () { openTaskManager(self); }
+        });
+      }
+
+      // 照片（时间轴相册）
+      if (self.photosEnabled()) {
+        menuItems.push({
+          label: '打开照片',
+          iconName: 'photos',
+          onClick: function () { openPhotos(self); }
         });
       }
 
