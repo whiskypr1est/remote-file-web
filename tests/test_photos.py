@@ -82,11 +82,46 @@ def make_plain_png(path: str, color=(10, 10, 200)) -> str:
     return path
 
 
+def jpeg_bytes(color=(180, 90, 40), taken: str = "", size=(80, 60)) -> bytes:
+    """
+    直接在内存里造一张 JPEG 的字节（用于上传接口的用例）。
+
+    ★ 必须是**真的 JPEG**：上传接口会读 EXIF、算缩略图、比对指纹，
+      拿一段随便的字节只能测到「文件不是图片」那一条。
+    """
+    import io
+
+    im = Image.new("RGB", size, color)
+    exif = Image.Exif()
+    if taken:
+        exif[306] = taken
+        exif[36867] = taken
+    buffer = io.BytesIO()
+    im.save(buffer, "JPEG", exif=exif)
+    return buffer.getvalue()
+
+
+def noisy_jpeg_bytes(size=(1500, 1500)) -> bytes:
+    """造一张**压不小**的 JPEG（噪声），用来测上传大小上限。"""
+    import io
+    import random
+
+    random.seed(20240915)
+    width, height = size
+    data = bytes(random.getrandbits(8) for _ in range(width * height * 3))
+    im = Image.frombytes("RGB", (width, height), data)
+    buffer = io.BytesIO()
+    im.save(buffer, "JPEG", quality=95)
+    return buffer.getvalue()
+
+
 def photo_cfg(work: str) -> dict:
     return {"photos": {
         "enabled": True,
         "state_path": os.path.join(work, "photos_state.json"),
         "index_path": os.path.join(work, "photo_index.json"),
+        "upload_dir": os.path.join(work, "photos_uploads"),
+        "upload_per_user": True,
         "thumb_size": 320,
     }}
 
@@ -909,6 +944,303 @@ class PhotosLibraryTests(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# 从浏览器所在的电脑上传
+# ---------------------------------------------------------------------------
+
+class PhotoUploadTests(unittest.TestCase):
+    """上传：落点、命名、索引，以及「读不出上传目录之外」这条闸门。"""
+
+    def setUp(self):
+        self.work = tempfile.mkdtemp(prefix="fw-photo-up-")
+        self.root = os.path.join(self.work, "share")
+        os.makedirs(self.root, exist_ok=True)
+        self.resolver = PathResolver([
+            {"id": "share", "name": "share", "path": self.root}])
+        self.cfg = photo_cfg(self.work)
+
+        # 造一张带 EXIF 的图放在「外面」，当作用户自己电脑上的文件
+        self.source = make_jpeg(os.path.join(self.work, "outbox", "我的照片.jpg"),
+                                (12, 34, 56), "2022:05:06 07:08:09")
+        with open(self.source, "rb") as fh:
+            self.blob = fh.read()
+
+        # 另造一张**内容不同**、但**同名**的图：用来验证重名不覆盖
+        other = make_jpeg(os.path.join(self.work, "outbox2", "我的照片.jpg"),
+                          (200, 100, 50), "2023:01:02 03:04:05")
+        with open(other, "rb") as fh:
+            self.blob_other = fh.read()
+
+    def tearDown(self):
+        shutil.rmtree(self.work, ignore_errors=True)
+
+    def _upload(self, filename="我的照片.jpg", blob=None, user=None):
+        """走一遍「算落点 -> 写字节 -> 索引」，等价于路由层的上传。"""
+        account = user or ADMIN
+        name, target = photos.prepare_upload_target(self.cfg, account, filename)
+        with open(target, "wb") as fh:
+            fh.write(self.blob if blob is None else blob)
+        item = photos.index_upload(self.cfg, account, self.resolver, target, name)
+        # 与路由层保持一致：内容重复就把刚写下的那份删掉
+        if item.get("duplicate"):
+            os.unlink(target)
+        return item, target
+
+    def _library(self, user=None):
+        account = user or ADMIN
+        return photos.build_library(self.cfg, account,
+                                    self.resolver if account is ADMIN
+                                    else PathResolver([]))
+
+    # -- 落点与命名 ---------------------------------------------------------
+
+    def test_upload_lands_under_the_users_own_upload_dir(self):
+        item, target = self._upload()
+        expect_dir = os.path.join(self.cfg["photos"]["upload_dir"], "admin")
+        self.assertTrue(target.startswith(expect_dir),
+                        "上传应当落在 <upload_dir>/<用户名>/ 下：%s" % target)
+        self.assertTrue(os.path.isfile(target))
+        self.assertEqual(item["name"], "我的照片.jpg")
+
+    def test_same_name_with_different_content_never_overwrites(self):
+        """★ 上传是最容易踩到覆盖的一步，而覆盖掉别人的照片几乎无法挽回。"""
+        first, target_a = self._upload()
+        second, target_b = self._upload(blob=self.blob_other)
+
+        self.assertNotEqual(target_a, target_b)
+        self.assertTrue(os.path.isfile(target_a), "先上传的那张必须还在")
+        self.assertEqual(os.path.basename(target_b), "我的照片 (1).jpg")
+        self.assertFalse(first["duplicate"])
+        self.assertFalse(second["duplicate"])
+
+        library = self._library()
+        self.assertEqual(len(library["photos"]), 2, "两张不同内容的照片都该在库里")
+        # 两张都读得出各自的 EXIF 时间，说明确实是两份不同的数据
+        self.assertEqual(sorted(p["taken_at"] for p in library["photos"]),
+                         ["2022-05-06T07:08:09", "2023-01-02T03:04:05"])
+
+    def test_auto_renamed_upload_records_the_name_it_actually_landed_on(self):
+        """
+        ★ 回归：重名自动改名之后，索引里记的 relpath 必须是**磁盘上真正的
+          那个名字**（`我的照片 (1).jpg`），而不是用户原本请求的名字。
+
+          早先这里直接用了 resolve_upload_target 回的那个「原请求名」，
+          于是第二个条目指向了**第一个文件** —— 条目内容和实际文件对不上，
+          界面上就会看到错误的缩略图 / 莫名其妙的「找不到」。
+        """
+        _first, _target_a = self._upload()
+        second, target_b = self._upload(blob=self.blob_other)
+
+        self.assertEqual(second["relpath"], os.path.basename(target_b))
+        self.assertNotEqual(second["relpath"], "我的照片.jpg")
+
+        # 条目指向的文件必须真的存在，而且就是刚上传的那一份
+        upload_root = os.path.join(self.cfg["photos"]["upload_dir"], "admin")
+        on_disk = os.path.join(upload_root, second["relpath"])
+        self.assertTrue(os.path.isfile(on_disk), "索引指向的文件必须真的在磁盘上")
+        with open(on_disk, "rb") as fh:
+            self.assertEqual(fh.read(), self.blob_other)
+
+        # 两条条目指向两个不同的文件，且都不 stale（大小/时间都对得上）
+        library = self._library()
+        paths = sorted(p["relpath"] for p in library["photos"])
+        self.assertEqual(paths, ["我的照片 (1).jpg", "我的照片.jpg"])
+        self.assertEqual([p["stale"] for p in library["photos"]], [False, False],
+                         "条目与实际文件对不上时会被标成 stale —— 这里不该出现")
+
+    def test_uploading_the_same_content_twice_is_reported_as_duplicate(self):
+        """
+        ★ 照片的身份就是**内容指纹**，所以同一张传两遍时索引里只能有一条。
+          如果不拦，第二次会悄悄把第一条的位置顶掉，磁盘上留下一个永远
+          不会被索引的副本（用户看不到、也不会去删）。这里要：
+            1. 如实报 duplicate；
+            2. 相册里只有一张；
+            3. 第一条的位置没被动过；
+            4. 刚写下的那份已经被删掉，不在磁盘上留孤儿。
+        """
+        first, target_a = self._upload()
+        second, target_b = self._upload()          # 同一个 blob
+
+        self.assertFalse(first["duplicate"])
+        self.assertTrue(second["duplicate"], "同一份内容应当被识别为重复")
+        self.assertEqual(second["id"], first["id"], "内容相同就是同一个指纹")
+
+        library = self._library()
+        self.assertEqual(len(library["photos"]), 1, "相册里只该有一张")
+        self.assertFalse(os.path.isfile(target_b), "★ 重复的那份不该留在磁盘上")
+
+        # 第一次的位置必须原样保留（不能被第二次顶掉）
+        self.assertTrue(os.path.isfile(target_a))
+        self.assertTrue(library["photos"][0]["relpath"].startswith("我的照片"),
+                        library["photos"][0]["relpath"])
+
+    def test_re_uploading_restores_a_deleted_photo(self):
+        """原来那张被删掉之后再传一次：位置应当补回来，而不是报「重复」。"""
+        first, target_a = self._upload()
+        os.unlink(target_a)
+        photos.rescan(self.cfg, ADMIN, self.resolver)
+        self.assertTrue(self._library()["photos"][0]["missing"])
+
+        second, target_b = self._upload()
+        self.assertFalse(second["duplicate"], "原位置已经不在了，这次是恢复而不是重复")
+        photo = self._library()["photos"][0]
+        self.assertFalse(photo["missing"])
+        self.assertTrue(os.path.isfile(target_b))
+
+    def test_non_image_is_rejected(self):
+        for bad in ("病毒.exe", "说明.txt", "archive.zip", "没有扩展名"):
+            with self.assertRaises(photos.PhotoError, msg="应当拒绝：%r" % bad):
+                photos.prepare_upload_target(self.cfg, ADMIN, bad)
+
+    def test_blocked_extension_is_rejected_even_with_an_image_suffix(self):
+        # 图片扩展名 + 黑名单里的可执行后缀：两边都要挡得住
+        with self.assertRaises(photos.PhotoError):
+            photos.prepare_upload_target(self.cfg, ADMIN, "a.jpg.bat")
+
+    def test_filename_is_sanitized(self):
+        name, target = photos.prepare_upload_target(self.cfg, ADMIN, "../../evil.jpg")
+        # 补齐目录后才能写，这里只关心「名字里的穿越成分被消掉了」
+        self.assertNotIn("..", name)
+        self.assertTrue(target.startswith(self.cfg["photos"]["upload_dir"]))
+
+    # -- 安全闸门 -----------------------------------------------------------
+
+    def test_safe_rel_rejects_traversal_and_absolute_paths(self):
+        for bad in ("../x.jpg", "..\\x.jpg", "/etc/passwd", "C:\\Windows\\x.jpg",
+                    "a/../../b.jpg", "", "   ", "."):
+            with self.assertRaises(photos.PhotoError, msg="应当拒绝：%r" % bad):
+                photos._safe_rel(bad)
+
+    def test_upload_file_path_stays_inside_the_users_dir(self):
+        """
+        ★ 上传目录里的文件名会参与路径拼接，所以必须挡掉 `..` ——
+          这个目录是**服务端自己写**的，但读取时仍要重新过闸门。
+        """
+        with self.assertRaises(photos.PhotoError):
+            photos.upload_file_path(self.cfg, ADMIN, "../../../Windows/win.ini")
+
+        ok = photos.upload_file_path(self.cfg, ADMIN, "我的照片.jpg")
+        self.assertTrue(ok.startswith(os.path.join(
+            self.cfg["photos"]["upload_dir"], "admin")))
+
+    def test_a_tampered_upload_entry_cannot_escape(self):
+        """把索引里的 relpath 改成 `../../`，读取必须被挡下来。"""
+        item, _target = self._upload()
+        index = photos.load_index(self.cfg, ADMIN)
+        index["entries"][item["id"]]["relpath"] = "../../../../Windows/win.ini"
+        photos._atomic_write(photos.index_path(self.cfg, ADMIN), index)
+
+        with self.assertRaises(photos.PhotoError):
+            photos.resolve_photo(self.cfg, ADMIN, self.resolver, item["id"])
+
+        library = self._library()
+        self.assertEqual(len(library["photos"]), 0, "坏条目要被跳过，而不是把文件交出去")
+        self.assertEqual(library["inaccessible"], 1)
+
+    def test_upload_root_cannot_be_reached_through_a_real_root_id(self):
+        """上传条目的 root 是伪根，解析器里根本没有它 —— 不能借它绕过闸门。"""
+        with self.assertRaises(photos.PhotoError):
+            photos.resolve_entry(self.cfg, ADMIN, self.resolver,
+                                 {"root": "__uploads__", "relpath": ""})
+
+    # -- 进库与后续操作 -----------------------------------------------------
+
+    def test_uploaded_photo_shows_up_with_its_exif_time(self):
+        item, _target = self._upload()
+        library = self._library()
+        self.assertEqual(len(library["photos"]), 1)
+
+        photo = library["photos"][0]
+        self.assertEqual(photo["name"], "我的照片.jpg")
+        self.assertEqual(photo["taken_at"], "2022-05-06T07:08:09",
+                         "上传的照片同样要读 EXIF 时间")
+        self.assertEqual(photo["source"], "exif")
+        self.assertFalse(photo["missing"], "★ 上传完就该能正常显示，不该是「找不到」")
+
+    def test_uploaded_photo_can_be_edited_like_any_other(self):
+        """上传走的是同一条索引结构，所以编辑/相册/撤销这些能力一律适用。"""
+        item, _target = self._upload()
+        photos.apply_edits(self.cfg, ADMIN, [item["id"]],
+                           {"taken_at": "2001-02-03 04:05:06",
+                            "place": {"name": "上传测试地点"}})
+
+        photo = self._library()["photos"][0]
+        self.assertEqual(photo["taken_at"], "2001-02-03T04:05:06")
+        self.assertEqual(photo["source"], "user")
+        self.assertEqual(photo["place"]["name"], "上传测试地点")
+
+    def test_rescan_verifies_uploaded_photos_instead_of_reporting_them_missing(self):
+        """
+        ★ 重扫里也要走同一条解析路径。漏掉的话，上传的照片会在重扫之后
+          集体变成「找不到」—— 这是最容易漏、也最容易被当成数据丢了的一处。
+        """
+        self._upload()
+        result = photos.rescan(self.cfg, ADMIN, self.resolver)
+        self.assertEqual(result["verified"], 1, result)
+        self.assertEqual(result["missing"], 0, result)
+        self.assertFalse(self._library()["photos"][0]["missing"])
+
+    def test_deleting_an_uploaded_file_shows_up_as_missing_not_as_a_crash(self):
+        item, target = self._upload()
+        os.unlink(target)
+        photos.rescan(self.cfg, ADMIN, self.resolver)
+
+        library = self._library()
+        self.assertEqual(len(library["photos"]), 1, "条目要留着（编辑记录不能丢）")
+        self.assertTrue(library["photos"][0]["missing"])
+
+    # -- 按用户分目录 -------------------------------------------------------
+
+    def test_each_user_uploads_into_his_own_directory(self):
+        student = {"username": "stu01", "role": "user"}
+
+        _item_a, target_a = self._upload()
+        _item_b, target_b = self._upload(user=student)
+
+        self.assertIn(os.path.join("photos_uploads", "admin"), target_a)
+        self.assertIn(os.path.join("photos_uploads", "stu01"), target_b)
+        self.assertNotEqual(os.path.dirname(target_a), os.path.dirname(target_b))
+
+    def test_a_student_cannot_read_the_admins_upload(self):
+        item, _target = self._upload()
+        student = {"username": "stu01", "role": "user"}
+        student_resolver = PathResolver([])
+
+        # 学生的索引是另一个文件，根本看不到这条记录
+        with self.assertRaises(photos.PhotoError):
+            photos.resolve_photo(self.cfg, student, student_resolver, item["id"])
+
+        # 就算把管理员的条目硬塞进学生的索引，也只能落在学生自己的上传目录里
+        index = photos.load_index(self.cfg, student)
+        index["entries"][item["id"]] = {
+            "id": item["id"], "root": photos.UPLOAD_ROOT,
+            "relpath": "我的照片.jpg", "size": 1, "mtime": 0.0,
+            "w": 0, "h": 0, "exif_taken": "", "exif_tz": "",
+            "gps": None, "camera": "", "lens": "", "iso": 0, "fnum": 0.0,
+            "exposure": "", "added": 0.0,
+        }
+        photos._atomic_write(photos.index_path(self.cfg, student), index)
+
+        resolved = photos.resolve_entry(self.cfg, student, student_resolver,
+                                        {"root": photos.UPLOAD_ROOT,
+                                         "relpath": "我的照片.jpg"})
+        self.assertIn(os.path.join("photos_uploads", "stu01"), resolved,
+                      "★ 学生拿到的必须是**他自己**目录下的同名文件，而不是管理员的")
+        self.assertNotEqual(resolved, photos.upload_file_path(
+            self.cfg, ADMIN, "我的照片.jpg"))
+
+    def test_upload_dir_can_be_shared_with_upload_per_user_off(self):
+        cfg = photo_cfg(self.work)
+        cfg["photos"]["upload_per_user"] = False
+        student = {"username": "stu01", "role": "user"}
+        self.assertEqual(photos.upload_dir(cfg, ADMIN), photos.upload_dir(cfg, student))
+
+    def test_missing_upload_dir_config_is_a_readable_error(self):
+        cfg = {"photos": {"upload_dir": ""}}
+        with self.assertRaises(photos.PhotoError):
+            photos.prepare_upload_target(cfg, ADMIN, "a.jpg")
+
+
+# ---------------------------------------------------------------------------
 # 端到端：真的起一个服务
 # ---------------------------------------------------------------------------
 
@@ -937,6 +1269,8 @@ class PhotosApiTests(unittest.TestCase):
 
         def _extra(cfg):
             cfg["photos"]["enabled"] = True
+            # 调小上限，方便测「超过大小就拒绝」（413）；其余用例传的都是几百字节的小图
+            cfg["photos"]["max_upload_mb"] = 1
 
         cls.server = ServerProcess(
             [{"id": "main", "name": "main", "path": cls.root_a, "readonly": False}],
@@ -1288,6 +1622,106 @@ class PhotosApiTests(unittest.TestCase):
         anon = self.server.client()
         status, _data = anon.json("GET", "/api/photos/library")
         self.assertEqual(status, 401)
+
+    # -- 从浏览器所在的电脑上传 ---------------------------------------------
+
+    def _upload(self, filename, blob, client=None):
+        from urllib.parse import quote
+        return (client or self.admin).raw_post(
+            "/api/photos/upload?filename=" + quote(filename), blob)
+
+    def test_upload_from_the_browser_appears_in_the_library(self):
+        """★ 用户在自己电脑上选一张照片传上来，应当立刻出现在时间轴上。"""
+        blob = jpeg_bytes((190, 80, 40), "2022:05:06 07:08:09")
+        status, data = self._upload("我的照片.jpg", blob)
+        self.assertEqual(status, 200, data)
+        self.assertEqual(data["photo"]["name"], "我的照片.jpg")
+        self.assertFalse(data["duplicate"])
+
+        library = self._library()
+        self.assertEqual(len(library["photos"]), 1)
+        photo = library["photos"][0]
+        self.assertEqual(photo["taken_at"], "2022-05-06T07:08:09",
+                         "上传的照片同样要读 EXIF 时间")
+        self.assertFalse(photo["missing"], "上传完就该能正常显示")
+
+        # 缩略图与原图都要能取
+        status, headers, body = self.admin.raw_get(
+            "/api/photos/thumb?id=" + photo["id"])
+        self.assertEqual(status, 200)
+        self.assertTrue(body.startswith(b"\xff\xd8"))
+        status, _headers, raw = self.admin.raw_get("/api/photos/raw?id=" + photo["id"])
+        self.assertEqual(status, 200)
+        self.assertEqual(raw, blob, "原图应当就是刚上传的那份字节")
+
+    def test_uploaded_photo_can_be_edited_through_the_api(self):
+        blob = jpeg_bytes((30, 120, 200), "2022:05:06 07:08:09")
+        status, data = self._upload("可编辑.jpg", blob)
+        self.assertEqual(status, 200, data)
+        pid = data["photo"]["id"]
+
+        status, data = self.admin.json("POST", "/api/photos/edit", {
+            "ids": [pid],
+            "patch": {"taken_at": "2001-02-03 04:05:06", "place": {"name": "上传地点"}},
+        })
+        self.assertEqual(status, 200, data)
+
+        status, detail = self.admin.json("GET", "/api/photos/item?id=" + pid)
+        self.assertEqual(status, 200, detail)
+        self.assertEqual(detail["photo"]["taken_at"], "2001-02-03T04:05:06")
+        self.assertEqual(detail["photo"]["place"]["name"], "上传地点")
+
+    def test_uploading_the_same_content_twice_reports_duplicate(self):
+        """同一张传两遍：只留一份，而且明确告诉用户（不能悄悄少一张）。"""
+        blob = jpeg_bytes((70, 70, 70), "2020:01:01 00:00:00")
+        status, first = self._upload("重复.jpg", blob)
+        self.assertEqual(status, 200, first)
+        self.assertFalse(first["duplicate"])
+
+        status, second = self._upload("重复.jpg", blob)
+        self.assertEqual(status, 200, second)
+        self.assertTrue(second["duplicate"], second)
+        self.assertIn("完全相同", second["message"])
+
+        self.assertEqual(len(self._library()["photos"]), 1,
+                         "内容相同的照片在相册里只该出现一次")
+
+    def test_upload_rejects_a_non_image(self):
+        status, data = self._upload("说明.txt", b"this is not a photo at all")
+        self.assertEqual(status, 400, data)
+        self.assertIn("图片", json.dumps(data, ensure_ascii=False))
+
+    def test_upload_rejects_an_executable_extension(self):
+        status, data = self._upload("木马.exe", jpeg_bytes())
+        self.assertEqual(status, 400, data)
+
+    def test_upload_without_a_filename_is_rejected(self):
+        status, data = self.admin.raw_post("/api/photos/upload", jpeg_bytes())
+        self.assertEqual(status, 400, data)
+
+    def test_upload_over_the_size_limit_is_rejected(self):
+        """超过 photos.max_upload_mb 的要在写入前就被拒掉（413）。"""
+        blob = noisy_jpeg_bytes()
+        self.assertGreater(len(blob), 1024 * 1024,
+                           "噪声图应当大于 1MB，否则这条用例测不到上限")
+        status, data = self._upload("太大了.jpg", blob)
+        self.assertEqual(status, 413, data)
+
+    def test_upload_requires_login(self):
+        anon = self.server.client()
+        status, _data = self._upload("匿名.jpg", jpeg_bytes(), client=anon)
+        self.assertEqual(status, 401)
+
+    def test_student_upload_does_not_leak_into_the_admin_library(self):
+        """上传目录与索引都按用户分开：学生传的照片不该出现在管理员的相册里。"""
+        student = self._student()
+        blob = jpeg_bytes((123, 45, 67), "2019:09:09 09:09:09")
+        status, data = self._upload("学生的照片.jpg", blob, client=student)
+        self.assertEqual(status, 200, data)
+
+        self.assertEqual(len(self._library(student)["photos"]), 1)
+        self.assertEqual(self._library()["photos"], [],
+                         "★ 学生上传的照片不该出现在管理员的相册里")
 
     def test_state_files_are_written_into_the_temp_dir(self):
         """

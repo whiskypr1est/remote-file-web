@@ -678,6 +678,19 @@ export function photosForget(root, path) {
 }
 
 /**
+ * 从**浏览器所在的电脑**上传一张照片。
+ *
+ * 走原始请求体（不是 multipart）是为了拿到上传进度，也为了让服务端能边收
+ * 边写盘 —— 与壁纸、文件管理器、音乐上传同一套做法。
+ *
+ * @param {File}     file       用户选中的图片文件
+ * @param {function} onProgress (loaded, total) => void
+ */
+export function photosUpload(file, onProgress) {
+  return uploadBlob('/api/photos/upload', file, file.name, onProgress);
+}
+
+/**
  * 改一批照片。
  * patch 里出现的键才会被改：taken_at / place / tags / rating / caption
  */

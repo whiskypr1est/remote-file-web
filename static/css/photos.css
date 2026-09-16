@@ -508,45 +508,55 @@
   color: #2b3038;
 }
 
-/* ---- 大图查看 ---- */
+/* ---- 看大图：全屏灯箱 ----
+   挂在 document.body 上（不在窗口里），所以是**整屏**的：图片在正中最大化
+   显示，可以缩放平移。z-index 用 2000 —— 高于窗口层（100）与任务栏（1000），
+   但低于对话框（7000），这样查看器里弹确认框仍然显示在最上面。 */
 
-.ph-viewer {
-  position: absolute;
+.ph-lightbox {
+  position: fixed;
   inset: 0;
-  z-index: 20;
+  z-index: 2000;
   display: flex;
   flex-direction: column;
-  background: #1b1f26;
+  background: #14171c;
+  user-select: none;
 }
 
-.ph-viewer-top {
+.ph-lb-top {
   display: flex;
   align-items: center;
   gap: 8px;
   flex: none;
-  height: 38px;
+  height: 40px;
   padding: 0 10px;
   color: #e8ecf2;
-  background: rgba(0, 0, 0, 0.35);
+  background: rgba(0, 0, 0, 0.45);
 }
 
-.ph-viewer-title {
+.ph-lb-title {
   flex: 1;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
+  font-size: 12px;
 }
 
-.ph-viewer-tools {
+.ph-lb-tools {
   display: flex;
+  align-items: center;
   gap: 4px;
 }
 
-.ph-viewer-tools button,
-.ph-viewer-nav {
+.ph-lb-tools button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  min-width: 26px;
+  height: 26px;
+  padding: 0 7px;
+  font-size: 12px;
+  font-family: inherit;
   color: #e8ecf2;
   background: rgba(255, 255, 255, 0.1);
   border: none;
@@ -554,63 +564,118 @@
   cursor: pointer;
 }
 
-.ph-viewer-tools button {
-  width: 26px;
-  height: 26px;
-}
-
-.ph-viewer-tools button:hover,
-.ph-viewer-nav:hover {
+.ph-lb-tools button:hover {
   background: rgba(255, 255, 255, 0.24);
 }
 
-.ph-viewer-tools svg {
+.ph-lb-tools svg {
   width: 14px;
   height: 14px;
 }
 
-.ph-viewer-stage {
+.ph-lb-zoom {
+  min-width: 46px;
+  font-size: 12px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  color: #b9c2ce;
+}
+
+.ph-lb-sep {
+  width: 1px;
+  height: 16px;
+  margin: 0 3px;
+  background: rgba(255, 255, 255, 0.2);
+}
+
+/* 舞台（图片区）与右侧信息面板并排 —— 面板是**列**而不是压在图片下面，
+   所以图片能拿到剩下来的全部高度（这正是「只占一半屏幕」的那个问题） */
+.ph-lb-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+.ph-lb-stage {
   position: relative;
   display: flex;
   align-items: center;
   justify-content: center;
   flex: 1;
-  min-height: 0;
+  min-width: 0;
   overflow: hidden;
 }
 
-.ph-viewer-img {
-  max-width: 100%;
-  max-height: 100%;
-  object-fit: contain;
+/*
+ * ★ 刻意**不设** max-width / max-height：
+ *   「适应窗口」是自己在 JS 里按 naturalWidth/Height 算缩放比的。
+ *   让浏览器先缩一遍、我们再 transform 缩一遍，尺寸就对不上了。
+ */
+.ph-lb-img {
+  max-width: none;
+  max-height: none;
+  transform-origin: center center;
+  will-change: transform;
+  -webkit-user-drag: none;
 }
 
-.ph-viewer-nav {
+.ph-lb-nav {
   position: absolute;
   top: 50%;
-  width: 40px;
-  height: 64px;
-  font-size: 30px;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 72px;
+  font-size: 32px;
   line-height: 1;
+  color: #e8ecf2;
+  background: rgba(0, 0, 0, 0.35);
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
   transform: translateY(-50%);
 }
 
-.ph-viewer-nav.prev {
-  left: 8px;
+.ph-lb-nav:hover {
+  background: rgba(0, 0, 0, 0.6);
 }
 
-.ph-viewer-nav.next {
-  right: 8px;
+.ph-lb-nav.prev {
+  left: 10px;
 }
 
-.ph-viewer-side {
+.ph-lb-nav.next {
+  right: 10px;
+}
+
+.ph-lb-hint {
+  position: absolute;
+  bottom: 10px;
+  left: 50%;
+  padding: 4px 10px;
+  font-size: 11px;
+  color: #9aa4b2;
+  background: rgba(0, 0, 0, 0.4);
+  border-radius: 10px;
+  pointer-events: none;
+  transform: translateX(-50%);
+}
+
+.ph-lb-side {
   flex: none;
-  max-height: 52%;
-  padding: 10px 12px;
+  width: 336px;
+  padding: 12px 14px;
   overflow-y: auto;
   color: #dfe4ea;
   background: #22272f;
-  border-top: 1px solid #333a45;
+  border-left: 1px solid #333a45;
+}
+
+/* 收起信息面板：图片占满整屏 */
+.ph-lightbox.no-panel .ph-lb-side {
+  display: none;
 }
 
 /* ---- 查看器里的信息与编辑表单 ---- */
@@ -717,30 +782,30 @@
   gap: 8px;
 }
 
-/* 深色面板（大图查看器）里的字段换成深色配色 */
-.ph-viewer-side .ph-field > span {
+/* 深色面板（全屏灯箱）里的字段换成深色配色 */
+.ph-lb-side .ph-field > span {
   color: #8b93a0;
 }
 
-.ph-viewer-side .ph-field input,
-.ph-viewer-side .ph-field select,
-.ph-viewer-side .ph-field textarea {
+.ph-lb-side .ph-field input,
+.ph-lb-side .ph-field select,
+.ph-lb-side .ph-field textarea {
   color: #e8ecf2;
   background: #2c333d;
   border-color: #3d4551;
 }
 
-.ph-viewer-side .ph-btn {
+.ph-lb-side .ph-btn {
   color: #e8ecf2;
   background: #2c333d;
   border-color: #3d4551;
 }
 
-.ph-viewer-side .ph-btn:hover {
+.ph-lb-side .ph-btn:hover {
   background: #39414d;
 }
 
-.ph-viewer-side .ph-btn.primary {
+.ph-lb-side .ph-btn.primary {
   color: #fff;
   background: var(--accent, #0a6ad6);
   border-color: var(--accent, #0a6ad6);
@@ -865,4 +930,118 @@
 
 .ph-dir.up {
   color: var(--accent, #0a6ad6);
+}
+
+/* ---- 导入对话框：来源切换 ---- */
+
+.ph-seg-wide {
+  display: flex;
+  width: 100%;
+  margin-bottom: 12px;
+}
+
+.ph-seg-wide button {
+  flex: 1;
+  height: 30px;
+  font-size: 12px;
+}
+
+/* ---- 从我的电脑上传 ---- */
+
+.ph-drop {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 22px 16px;
+  text-align: center;
+  background: #f7f9fb;
+  border: 2px dashed #c8d2dd;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.ph-drop:hover,
+.ph-drop.over {
+  background: #eef4fc;
+  border-color: var(--accent, #0a6ad6);
+}
+
+.ph-drop-ico svg {
+  width: 30px;
+  height: 30px;
+  color: #8fa3b8;
+}
+
+.ph-drop-text {
+  font-size: 13px;
+  color: #2b3038;
+}
+
+.ph-drop-hint {
+  font-size: 11px;
+  line-height: 1.7;
+  color: #8b93a0;
+}
+
+.ph-upload-list {
+  max-height: 176px;
+  margin-top: 8px;
+  overflow-y: auto;
+}
+
+.ph-upload-head {
+  padding: 4px 2px;
+  font-size: 11px;
+  color: #8b93a0;
+}
+
+.ph-upload-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 6px;
+  font-size: 12px;
+  border-bottom: 1px solid #eef1f4;
+}
+
+.ph-upload-name {
+  flex: 1;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.ph-upload-size {
+  flex: none;
+  font-size: 11px;
+  color: #8b93a0;
+  font-variant-numeric: tabular-nums;
+}
+
+.ph-upload-progress {
+  margin-top: 10px;
+}
+
+.ph-upload-bar {
+  height: 6px;
+  overflow: hidden;
+  background: #e6e8ec;
+  border-radius: 3px;
+}
+
+.ph-upload-bar i {
+  display: block;
+  width: 0;
+  height: 100%;
+  background: var(--accent, #0a6ad6);
+  border-radius: 3px;
+  transition: width 0.12s;
+}
+
+.ph-upload-text {
+  margin-top: 5px;
+  font-size: 11px;
+  color: #6b7280;
+  word-break: break-all;
 }

@@ -211,7 +211,7 @@ async function main() {
   const allCells = await run("document.querySelectorAll('.ph-cell').length");
   check('切回「全部照片」后又有全部张数', allCells === 4, '张数=' + allCells);
 
-  console.log('=== 7. 双击看大图 ===');
+  console.log('=== 7. 双击看大图（全屏灯箱 + 缩放） ===');
   const dbl = await run(`(function () {
     var cell = document.querySelector('.ph-cell');
     if (!cell) { return 'no-cell'; }
@@ -220,20 +220,112 @@ async function main() {
   })()`, 'dblclick');
   check('双击照片已触发', dbl === 'ok', String(dbl));
   await wait(3000);
-  check('大图查看器已出现', await run("!!document.querySelector('.ph-viewer')"));
+  check('全屏灯箱已出现', await run("!!document.querySelector('.ph-lightbox')"));
 
-  const rawWidth = await waitImages(win, '.ph-viewer-img', 12000);
+  const rawWidth = await waitImages(win, '.ph-lb-img', 12000);
   check('原图在浏览器里解码成功',
     Array.isArray(rawWidth) && rawWidth.length > 0 && rawWidth[0] > 0,
     '宽度=' + JSON.stringify(rawWidth));
+
+  /* 几何：灯箱要铺满整屏、图片在图片区正中、而且**尽量大** ——
+     用户的原话就是「图片仅占一半屏幕还不能放大」，所以这几条是重点。 */
+  const geom = await run(`(function () {
+    var lb = document.querySelector('.ph-lightbox');
+    var stage = document.querySelector('.ph-lb-stage');
+    var img = document.querySelector('.ph-lb-img');
+    if (!lb || !stage || !img) { return null; }
+    var lr = lb.getBoundingClientRect();
+    var sr = stage.getBoundingClientRect();
+    var ir = img.getBoundingClientRect();
+    var z = document.querySelector('[data-role="zoom"]');
+    return {
+      winW: window.innerWidth, winH: window.innerHeight,
+      lbW: lr.width, lbH: lr.height,
+      stageW: sr.width, stageH: sr.height,
+      imgW: ir.width, imgH: ir.height,
+      offX: Math.abs((ir.left + ir.width / 2) - (sr.left + sr.width / 2)),
+      offY: Math.abs((ir.top + ir.height / 2) - (sr.top + sr.height / 2)),
+      ratioW: ir.width / sr.width, ratioH: ir.height / sr.height,
+      zoom: z ? z.textContent : ''
+    };
+  })()`, 'viewer-geom');
+  console.log('      查看器几何：' + JSON.stringify(geom));
+
+  check('灯箱铺满整屏',
+    geom && geom.lbW >= geom.winW - 2 && geom.lbH >= geom.winH - 2,
+    geom ? (geom.lbW + 'x' + geom.lbH + ' vs 窗口 ' + geom.winW + 'x' + geom.winH) : '没有几何信息');
+  check('图片区占了整屏高度的大半',
+    geom && geom.stageH >= geom.winH * 0.75,
+    geom ? ('图片区高 ' + Math.round(geom.stageH) + ' / 窗口高 ' + geom.winH) : '');
+  check('★ 图片在图片区正中',
+    geom && geom.offX <= 3 && geom.offY <= 3,
+    geom ? ('偏移 ' + geom.offX.toFixed(1) + ',' + geom.offY.toFixed(1) + 'px') : '');
+  check('★ 图片已按「适应窗口」放大到贴边（不再是半个屏幕）',
+    geom && (geom.ratioW >= 0.95 || geom.ratioH >= 0.95),
+    geom ? ('占图片区 ' + Math.round(geom.ratioW * 100) + '% x ' + Math.round(geom.ratioH * 100) + '%') : '');
+
+  /* 缩放三连：+ 要变大、1:1 要回到原始像素、适应要贴回去 */
+  await run("document.querySelector(\".ph-lb-tools [data-act='zoom-in']\").click()", 'zoom-in');
+  await run("document.querySelector(\".ph-lb-tools [data-act='zoom-in']\").click()", 'zoom-in');
+  await wait(400);
+  const zoomed = await run(`(function () {
+    var img = document.querySelector('.ph-lb-img');
+    var ir = img.getBoundingClientRect();
+    var z = document.querySelector('[data-role="zoom"]');
+    return { w: ir.width, label: z ? z.textContent : '' };
+  })()`, 'zoomed');
+  check('★ 放大按钮真的把图放大了',
+    zoomed && geom && zoomed.w > geom.imgW * 1.1,
+    (geom ? Math.round(geom.imgW) : '?') + 'px -> ' +
+    (zoomed ? Math.round(zoomed.w) : '?') + 'px（标签 ' + (zoomed ? zoomed.label : '') + '）');
+
+  await run("document.querySelector(\".ph-lb-tools [data-act='actual']\").click()", 'actual');
+  await wait(400);
+  const actual = await run(`(function () {
+    var img = document.querySelector('.ph-lb-img');
+    var ir = img.getBoundingClientRect();
+    var z = document.querySelector('[data-role="zoom"]');
+    return { w: ir.width, natural: img.naturalWidth, label: z ? z.textContent : '' };
+  })()`, 'actual');
+  check('★ 「1:1」回到原始像素大小',
+    actual && Math.abs(actual.w - actual.natural) <= 2 && actual.label === '100%',
+    JSON.stringify(actual));
+
+  await run("document.querySelector(\".ph-lb-tools [data-act='fit']\").click()", 'fit');
+  await wait(400);
+  const refit = await run(`(function () {
+    var stage = document.querySelector('.ph-lb-stage');
+    var img = document.querySelector('.ph-lb-img');
+    var sr = stage.getBoundingClientRect();
+    var ir = img.getBoundingClientRect();
+    return { rw: ir.width / sr.width, rh: ir.height / sr.height, label: '' };
+  })()`, 'refit');
+  check('★ 「适应」把图重新贴回窗口',
+    refit && (refit.rw >= 0.95 || refit.rh >= 0.95), JSON.stringify(refit));
+
+  /* 收起信息面板：图片区应当明显变宽 */
+  await run("document.querySelector(\".ph-lb-tools [data-act='info']\").click()", 'toggle-panel');
+  await wait(400);
+  const wide = await run(`(function () {
+    var stage = document.querySelector('.ph-lb-stage');
+    var sr = stage.getBoundingClientRect();
+    var side = document.querySelector('.ph-lightbox .ph-lb-side');
+    return { w: sr.width, sideVisible: !!(side && side.offsetParent) };
+  })()`, 'wide');
+  check('★ 收起信息面板后图片区更宽',
+    wide && geom && wide.w > geom.stageW + 100 && !wide.sideVisible,
+    (geom ? Math.round(geom.stageW) : '?') + 'px -> ' + (wide ? Math.round(wide.w) : '?') + 'px');
+  await run("document.querySelector(\".ph-lb-tools [data-act='info']\").click()", 'toggle-panel-back');
+  await wait(300);
+
   check('编辑面板有时间输入框',
-    await run("!!document.querySelector(\".ph-viewer [data-field='taken_at']\")"));
+    await run("!!document.querySelector(\".ph-lightbox [data-field='taken_at']\")"));
 
   console.log('=== 8. 在界面上改时间与地点（真实保存链路） ===');
   const saved = await run(`(function () {
-    var t = document.querySelector(".ph-viewer [data-field='taken_at']");
-    var p = document.querySelector(".ph-viewer [data-field='place']");
-    var btn = document.querySelector(".ph-viewer [data-act='save']");
+    var t = document.querySelector(".ph-lightbox [data-field='taken_at']");
+    var p = document.querySelector(".ph-lightbox [data-field='place']");
+    var btn = document.querySelector(".ph-lightbox [data-act='save']");
     if (!t || !p || !btn) { return 'missing-fields'; }
     t.value = '2021-03-04 05:06:07';
     p.value = '浏览器冒烟测试地点';
@@ -244,7 +336,7 @@ async function main() {
 
   await wait(4500);
   const panelText = await run(`(function () {
-    var el = document.querySelector('.ph-viewer [data-role="side-panel"]');
+    var el = document.querySelector('.ph-lightbox [data-role="side-panel"]');
     return el ? el.innerText.replace(/\\s+/g, ' ') : '(没有面板)';
   })()`, 'panel-text');
   check('★ 改完的时间立刻体现在界面上', String(panelText).indexOf('2021-03-04') >= 0,
@@ -253,7 +345,7 @@ async function main() {
   /* ★ 地点要用 input.value 读：innerText 拿不到 <input> 里填的值
      （第一版用 innerText 判断，结果是一条假失败） */
   const placeValue = await run(`(function () {
-    var el = document.querySelector(".ph-viewer [data-field='place']");
+    var el = document.querySelector(".ph-lightbox [data-field='place']");
     return el ? el.value : '(没有地点输入框)';
   })()`, 'place-value');
   check('★ 改完的地点立刻体现在界面上',
@@ -269,8 +361,9 @@ async function main() {
   await shot(win, 'viewer.png');
 
   console.log('=== 9. 改完之后「待整理」应当少一张 ===');
-  await run("document.querySelector(\".ph-viewer [data-act='close']\").click()", 'close-viewer');
+  await run("document.querySelector(\".ph-lb-tools [data-act='close']\").click()", 'close-viewer');
   await wait(800);
+  check('灯箱已关闭', await run("!document.querySelector('.ph-lightbox')"));
   const unsortedAfter = await run(`(function () {
     var navs = Array.prototype.slice.call(document.querySelectorAll('.ph-nav'));
     var target = navs.filter(function (n) { return n.textContent.indexOf('待整理') >= 0; })[0];
@@ -278,10 +371,9 @@ async function main() {
   })()`, 'unsorted-count');
   console.log('      侧栏那一行：' + unsortedAfter);
   check('改过时间之后，那张就不再是「待整理」了',
-    String(unsortedAfter).indexOf('0') >= 0 || String(unsortedAfter).indexOf('待整理') >= 0,
-    String(unsortedAfter));
+    String(unsortedAfter).indexOf('0') >= 0, String(unsortedAfter));
 
-  console.log('=== 10. 导入对话框 ===');
+  console.log('=== 10. 导入对话框（服务器上的文件夹） ===');
   await run("(function () { var b = document.querySelector('.ph-toolbar [data-act=\"import\"]'); if (b) { b.click(); } })()", 'open-import');
   await wait(2500);
   check('「导入照片」对话框能打开', await run("!!document.querySelector('.ph-modal')"));
@@ -289,6 +381,76 @@ async function main() {
   const dirCount = await run("document.querySelectorAll('.ph-dir').length");
   check('目录浏览列出了文件夹', typeof dirCount === 'number' && dirCount > 0, '条目=' + dirCount);
   await shot(win, 'import.png');
+
+  console.log('=== 11. 从我的电脑上传（模拟拖放 + 真实上传） ===');
+  await run(`(function () {
+    var b = document.querySelector('.ph-seg-wide [data-mode="upload"]');
+    if (b) { b.click(); }
+  })()`, 'switch-upload');
+  await wait(600);
+  check('切到「从我的电脑上传」后出现拖放区',
+    await run("!!document.querySelector('.ph-drop') && !document.querySelector('[data-role=\"upload-pane\"]').hidden"));
+
+  /* 在页面里用 canvas 造一张**真的 JPEG**，塞进 DataTransfer 再模拟拖放 ——
+     这样走的是与用户拖文件进来**完全同一条**代码路径
+     （acceptFiles -> 列表 -> 开始上传 -> XHR 上传 -> 服务端索引） */
+  const dropped = await run(`new Promise(function (resolve) {
+    var c = document.createElement('canvas');
+    c.width = 640; c.height = 480;
+    var ctx = c.getContext('2d');
+    var grad = ctx.createLinearGradient(0, 0, 640, 480);
+    grad.addColorStop(0, '#1b6fd6');
+    grad.addColorStop(1, '#e8a825');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, 640, 480);
+    ctx.fillStyle = '#ffffff';
+    ctx.font = 'bold 56px sans-serif';
+    ctx.fillText('SMOKE', 42, 260);
+    c.toBlob(function (blob) {
+      var file = new File([blob], 'smoke-upload.jpg', { type: 'image/jpeg' });
+      var dt = new DataTransfer();
+      dt.items.add(file);
+      var drop = document.querySelector('.ph-drop');
+      if (!drop) { resolve('no-drop-zone'); return; }
+      drop.dispatchEvent(new DragEvent('drop', {
+        dataTransfer: dt, bubbles: true, cancelable: true
+      }));
+      resolve('ok:' + file.size);
+    }, 'image/jpeg', 0.92);
+  })`, 'simulate-drop');
+  check('模拟拖放一张照片进拖放区', String(dropped).indexOf('ok:') === 0, String(dropped));
+
+  await wait(900);
+  const listed = await run("document.querySelectorAll('.ph-upload-item').length");
+  check('拖放后文件出现在待上传列表里', listed === 1, '条目=' + listed);
+  check('确定按钮变成「开始上传」并已启用',
+    await run(`(function () {
+      var b = document.querySelector('.ph-modal-foot [data-act="ok"]');
+      return !!b && b.textContent.indexOf('开始上传') >= 0 && !b.disabled;
+    })()`));
+  await shot(win, 'upload.png');
+
+  await run("document.querySelector('.ph-modal-foot [data-act=\"ok\"]').click()", 'do-upload');
+  await wait(4500);
+  const afterUpload = await run(`(function () {
+    var navs = Array.prototype.slice.call(document.querySelectorAll('.ph-nav'));
+    var all = navs.filter(function (n) { return n.textContent.indexOf('全部照片') >= 0; })[0];
+    var unsorted = navs.filter(function (n) { return n.textContent.indexOf('待整理') >= 0; })[0];
+    return {
+      cells: document.querySelectorAll('.ph-cell').length,
+      all: all ? all.textContent : '',
+      unsorted: unsorted ? unsorted.textContent : '',
+      modalOpen: !!document.querySelector('.ph-modal')
+    };
+  })()`, 'after-upload');
+  console.log('      上传之后：' + JSON.stringify(afterUpload));
+  check('上传完成后对话框自动关闭', afterUpload && afterUpload.modalOpen === false);
+  check('★ 上传的照片已经进入相册（张数 +1）',
+    afterUpload && afterUpload.cells >= 5, '网格张数=' + (afterUpload ? afterUpload.cells : '?'));
+  check('★ 上传的那张没有 EXIF，落进了「待整理」',
+    afterUpload && String(afterUpload.unsorted).indexOf('1') >= 0,
+    String(afterUpload ? afterUpload.unsorted : ''));
+  await shot(win, 'after-upload.png');
 
   console.log('');
   const failed = results.filter(function (r) { return !r.ok; });

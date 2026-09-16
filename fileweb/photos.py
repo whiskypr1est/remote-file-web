@@ -62,10 +62,12 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from PIL import Image
 
+from . import fsops
 from . import peruser
 from . import thumbs
 from .fsops import is_link_or_junction
-from .security import PathSecurityError
+from .security import (PathSecurityError, is_blocked_extension, is_within,
+                       sanitize_filename)
 
 # ---------------------------------------------------------------------------
 # 常量
@@ -92,6 +94,27 @@ JOURNAL_LIMIT = 50
 
 # 相册名长度上限
 MAX_ALBUM_NAME = 60
+
+# ★ 「上传进来的照片」用的伪根标识。
+#
+# 为什么需要它：照片是**就地索引**的（索引里存「根标识 + 相对路径」，读取时
+# 再过一遍用户解析器），而从浏览器所在的电脑上传进来的文件必须先落到服务器
+# 的某个目录里 —— 那个目录未必在用户的可见根范围内（子用户只被分配了几个
+# 特定目录）。用一个伪根把它跟「用户自己的目录」区分开，解析时改走
+# `photos.upload_dir/<用户名>/`，于是：
+#   * 子用户只能看到**自己**上传的那一份（每人一个子目录）；
+#   * 一个被改坏的索引也没法借它读到上传目录之外（见 upload_file_path）。
+#
+# 这个标识以 `__` 开头，而且带下划线 —— users.py 的用户名规则是
+# `[A-Za-z0-9_.-]`，驱动器的根标识（drives.drive_id_for）也不会长这样，
+# 所以它不可能跟真实的根标识撞上。
+UPLOAD_ROOT = "__uploads__"
+
+# 从浏览器上传单个照片的大小上限（MB）
+DEFAULT_MAX_UPLOAD_MB = 200
+
+# 一次最多上传多少张（前端逐张上传，这里是服务端的兜底口径）
+MAX_UPLOAD_BATCH = 2000
 
 _LOCK = threading.RLock()
 
@@ -461,6 +484,88 @@ def thumb_size(cfg: Dict[str, Any]) -> int:
     except (TypeError, ValueError):
         value = 320
     return min(1024, max(64, value))
+
+
+def upload_dir(cfg: Dict[str, Any], user: Optional[Dict[str, Any]]) -> str:
+    """
+    「从浏览器上传的照片」该落在哪个目录（只算路径，不创建）。
+
+    ★ 每人一个子目录时要过 peruser.safe_username：用户名会被拼进路径，
+      而这个目录是会被**写**的（上传的照片就落在里面）。
+      不分子目录的话，同学上传的照片会混进同一个目录，而且互相看得到文件名。
+    """
+    settings = cfg.get("photos") or {}
+    base = str(settings.get("upload_dir") or "").strip()
+    if not base:
+        return ""
+
+    if settings.get("upload_per_user", True):
+        name = peruser.safe_username((user or {}).get("username"))
+        if name:
+            return os.path.join(base, name)
+    return base
+
+
+def ensure_upload_dir(cfg: Dict[str, Any], user: Optional[Dict[str, Any]]) -> str:
+    """拿到上传目录并确保它存在。"""
+    path = upload_dir(cfg, user)
+    if not path:
+        raise PhotoError("没有配置照片上传目录（config.json 的 photos.upload_dir）")
+    try:
+        os.makedirs(path, exist_ok=True)
+    except OSError as exc:
+        raise PhotoError("无法创建照片上传目录：%s" % exc)
+    return path
+
+
+def max_upload_bytes(cfg: Dict[str, Any]) -> int:
+    """单张照片的上传上限（字节）。"""
+    try:
+        mb = int((cfg.get("photos") or {}).get("max_upload_mb") or DEFAULT_MAX_UPLOAD_MB)
+    except (TypeError, ValueError):
+        mb = DEFAULT_MAX_UPLOAD_MB
+    return max(1, mb) * 1024 * 1024
+
+
+def _safe_rel(rel: Any) -> str:
+    """
+    校验上传目录内的相对路径。
+
+    ★ 与 norm_id 一样是**安全闸门**：上传目录里的文件名会参与路径拼接，
+      所以必须挡掉 `..`、绝对路径与盘符。上传时写下去的名字由我们自己
+      生成（sanitize_filename + unique_path），但读取时会经过这里，
+      于是「索引文件被手工改坏」也读不出上传目录之外。
+
+    ★ 开头是 `/` 或 `\\` 的也要拒掉，**不能靠 os.path.isabs**：
+      它在 Windows 上对 `/etc/passwd` 返回 False（那是「相对当前盘」的写法），
+      于是同一个字符串在 Linux 上被拒、在 Windows 上被放行 —— 这种
+      「随平台变的安全判断」正是最不该出现在闸门里的东西。
+      反正一个**相对**路径本来就不该以分隔符开头。
+    """
+    text = str(rel or "").replace("\\", "/").strip()
+    if not text or text.startswith("/") or ":" in text:
+        raise PhotoError("照片路径不合法")
+
+    parts = [p for p in text.split("/") if p not in ("", ".")]
+    if not parts or any(p == ".." for p in parts):
+        raise PhotoError("照片路径不合法")
+    return "/".join(parts)
+
+
+def upload_file_path(cfg: Dict[str, Any], user: Optional[Dict[str, Any]],
+                     rel: Any) -> str:
+    """上传目录里某个文件的绝对路径（相对路径已校验，且必须落在目录内）。"""
+    directory = upload_dir(cfg, user)
+    if not directory:
+        raise PhotoError("没有配置照片上传目录（config.json 的 photos.upload_dir）")
+
+    target = os.path.join(directory, _safe_rel(rel))
+    # 双保险：拼出来的路径必须还在**这个用户自己的**上传目录里。
+    # 上面已经挡掉了 `..` 与绝对路径，这一层是防「将来放宽了 _safe_rel」
+    # 或者符号链接把路径带到别处。
+    if not is_within(os.path.realpath(directory), os.path.realpath(target)):
+        raise PhotoError("照片路径不合法")
+    return target
 
 
 def max_items(cfg: Dict[str, Any]) -> int:
@@ -1059,9 +1164,10 @@ def rescan(cfg: Dict[str, Any], user: Optional[Dict[str, Any]], resolver,
             job.advance(items=1, current=os.path.basename(entry["relpath"]))
 
         try:
-            _root, abs_path = resolver.resolve(entry["root"], entry["relpath"])
-        except PathSecurityError:
-            # 根已经不在这个人的可见范围里了（管理员改了分配）——
+            abs_path = resolve_entry(cfg, user, resolver, entry)
+        except (PathSecurityError, PhotoError):
+            # 根已经不在这个人的可见范围里了（管理员改了分配）、
+            # 或者上传条目的文件名被改坏了 ——
             # 不当成「文件丢了」，只是这次没法核对
             unresolved[pid] = entry
             continue
@@ -1337,10 +1443,12 @@ def build_library(cfg: Dict[str, Any], user: Optional[Dict[str, Any]], resolver,
     inaccessible = 0
     for pid, entry in index["entries"].items():
         try:
-            _root, abs_path = resolver.resolve(entry["root"], entry["relpath"])
-        except PathSecurityError:
-            # 这个根已经不在当前用户的可见范围内（管理员改了分配）。
-            # ★ 直接跳过：相册绝不能成为绕过可见性的旁路。
+            abs_path = resolve_entry(cfg, user, resolver, entry)
+        except (PathSecurityError, PhotoError):
+            # 这个根已经不在当前用户的可见范围内（管理员改了分配），
+            # 或者上传条目的文件名被改坏了。
+            # ★ 直接跳过：相册绝不能成为绕过可见性的旁路，
+            #   也绝不能因为一条坏记录就让整库打不开。
             inaccessible += 1
             continue
 
@@ -1394,15 +1502,42 @@ def build_library(cfg: Dict[str, Any], user: Optional[Dict[str, Any]], resolver,
 # 取单个 / 解析路径
 # ---------------------------------------------------------------------------
 
+def resolve_entry(cfg: Dict[str, Any], user: Optional[Dict[str, Any]], resolver,
+                  entry: Dict[str, Any]) -> str:
+    """
+    索引条目 -> 绝对路径。**所有**读文件的地方都必须走这里。
+
+    条目有两种来源，闸门也相应有两道：
+
+      * 普通条目（用户在服务器上挑的目录）：走**当前用户的路径解析器**。
+        索引里存的是「根标识 + 相对路径」，所以手工把 relpath 改成
+        `../../etc/passwd` 也读不出根目录外的文件 —— 如果索引里存的是绝对
+        路径，编辑一个 JSON 就等于任意文件读取。
+      * 上传进来的照片（root = UPLOAD_ROOT）：走 `upload_dir/<用户名>/`。
+        那里面的文件名由服务端生成，且必须落在这个用户自己的上传目录内。
+
+    ★ 集中成一个函数是刻意的：早先这三处（重扫、列库、取单张）各写了一遍
+      `resolver.resolve`，加上上传之后必须三处同时改对，漏掉任何一处就会
+      出现「上传的照片在相册里显示找不到」这种很难查的问题。
+    """
+    root = str(entry.get("root") or "")
+    rel = str(entry.get("relpath") or "")
+
+    if root == UPLOAD_ROOT:
+        return upload_file_path(cfg, user, rel)
+
+    _root_cfg, abs_path = resolver.resolve(root, rel)
+    return abs_path
+
+
 def resolve_photo(cfg: Dict[str, Any], user: Optional[Dict[str, Any]], resolver,
                   photo_id: Any) -> Tuple[Dict[str, Any], str]:
     """
     照片标识 -> (索引条目, 绝对路径)。
 
-    ★ 这里是**第二道安全闸门**。索引里存的是「根标识 + 相对路径」，
-      所以就算有人手工把 photo_index.json 里的 relpath 改成 `../../etc/passwd`，
-      也要再过一遍当前用户的解析器 —— join_within_root 会把它挡下来。
-      如果索引里存的是绝对路径，编辑一个 JSON 就等于任意文件读取。
+    ★ 这里是**第二道安全闸门**（第一道是 norm_id）。索引里存的是
+      「根标识 + 相对路径」，所以就算有人手工改了 photo_index.json，
+      也要再过一遍 resolve_entry 的两道校验才变成绝对路径。
     """
     pid = norm_id(photo_id)
     entry = load_index(cfg, user)["entries"].get(pid)
@@ -1410,13 +1545,139 @@ def resolve_photo(cfg: Dict[str, Any], user: Optional[Dict[str, Any]], resolver,
         raise PhotoError("这张照片不在索引里（可能还没导入，或已被移除）")
 
     try:
-        _root, abs_path = resolver.resolve(entry["root"], entry["relpath"])
+        abs_path = resolve_entry(cfg, user, resolver, entry)
     except PathSecurityError as exc:
         raise PhotoError("这张照片不在你能访问的目录里：%s" % exc)
 
     if not os.path.isfile(abs_path):
         raise PhotoError("文件已经不在了：%s" % entry["relpath"])
     return entry, abs_path
+
+
+# ---------------------------------------------------------------------------
+# 上传（从**浏览器所在的电脑**传进来）
+# ---------------------------------------------------------------------------
+
+def prepare_upload_target(cfg: Dict[str, Any], user: Optional[Dict[str, Any]],
+                          filename: str, declared_size: int = 0,
+                          blocked_extensions: Iterable[str] = ()) -> Tuple[str, str]:
+    """
+    校验并算出上传照片的落盘路径，返回 (清洗后的文件名, 目标绝对路径)。
+
+    与文件管理器、音乐播放器同一套做法，三条一致的口径：
+
+      * **只收图片**：不是图片扩展名直接拒绝（比黑名单更严，也更贴合本功能）——
+        收下打不开的文件，用户只会得到一个点不动的条目；
+      * **绝不覆盖**：同名一律自动改名（`照片.jpg` → `照片 (1).jpg`），
+        上传是最容易踩到覆盖的一步，而覆盖掉别人的照片几乎无法挽回；
+      * **落盘前先看磁盘**：Content-Length 给了就先查一次剩余空间。
+    """
+    directory = ensure_upload_dir(cfg, user)
+
+    safe_name = sanitize_filename(filename)
+    if not safe_name:
+        raise PhotoError("文件名不合法")
+    if not is_photo(safe_name):
+        raise PhotoError(
+            "只支持图片格式：%s" % "、".join(PHOTO_EXTENSIONS))
+
+    hit = is_blocked_extension(safe_name, blocked_extensions)
+    if hit:
+        raise PhotoError("出于安全考虑，禁止上传 %s 类型的文件" % hit)
+
+    if declared_size:
+        try:
+            fsops.check_disk_space(directory, int(declared_size))
+        except OSError as exc:
+            raise PhotoError(str(exc))
+
+    try:
+        _requested, target = fsops.resolve_upload_target(
+            directory, safe_name, blocked_extensions, overwrite=False)
+    except (PathSecurityError, FileExistsError) as exc:
+        raise PhotoError(str(exc))
+
+    # ★ 必须用**磁盘上真正的那个名字**：resolve_upload_target 回的名字是
+    #   「用户原本请求的名字」，而重名时 unique_path 会把文件改成
+    #   `照片 (1).jpg` —— 两者并不一致。这个名字会被存进索引当 relpath 用，
+    #   用错的话条目就指向了另一个文件（表现是缩略图和实际内容对不上，
+    #   或者干脆显示「找不到」）。文件管理器那边只是提示语不好看，
+    #   在这里却是数据正确性问题。
+    final_name = os.path.basename(target)
+    return final_name, target
+
+
+def index_upload(cfg: Dict[str, Any], user: Optional[Dict[str, Any]], resolver,
+                 abs_path: str, name: str) -> Dict[str, Any]:
+    """
+    把刚上传落盘的文件就地索引进去（root 用 UPLOAD_ROOT）。
+
+    与「服务器上导入」走的是同一条索引结构，所以指纹、EXIF、时间三态、
+    编辑、重扫这些能力对它一律适用，不需要另一套代码。
+
+    ★ 返回里的 `duplicate` 是**内容重复**：照片的身份就是内容指纹，所以
+      同一张照片传两遍时，两份文件的指纹完全一样，索引里只能有一条记录。
+      如果不处理，第二次上传会**悄悄把第一条的位置顶掉**，磁盘上留下一个
+      永远不会被索引的副本（用户看不到、也不会去删）。
+      所以这里如实报出来，由调用方把刚写下的那份删掉并明确告诉用户。
+    """
+    try:
+        stat = os.stat(abs_path)
+    except OSError as exc:
+        raise PhotoError("无法读取刚上传的文件：%s" % exc)
+
+    entry = _build_entry(UPLOAD_ROOT, name, abs_path,
+                         size=int(stat.st_size), mtime=stat.st_mtime)
+
+    existing = load_index(cfg, user)["entries"].get(entry["id"])
+    if existing is not None:
+        # 这条指纹已经在库里了。先看它记的是不是**同一个位置**：
+        # 同位置说明 unique_path 把刚写下的文件又放回了原处（原来那份被删过），
+        # 那就是同一张照片回来了，刷新元数据即可，不算重复。
+        same_location = (str(existing.get("root") or "") == entry["root"]
+                         and str(existing.get("relpath") or "") == entry["relpath"])
+
+        if not same_location:
+            # 位置不同，再看老位置的文件还在不在：
+            #   * 还在 → 这次是重复上传，位置**不动**（不然第一条就成了孤儿）；
+            #   * 不在（被删/被挪走）→ 正好用这一份把位置补回来，相当于恢复。
+            # ★ 必须先比位置再看文件：只查 isfile 的话，刚写在**原位置**上的
+            #   文件会把「已经删掉的那份」误判成还在，于是「恢复」变成「重复」。
+            still_there = False
+            try:
+                still_there = os.path.isfile(
+                    resolve_entry(cfg, user, resolver, existing))
+            except (PathSecurityError, PhotoError):
+                still_there = False
+
+            if still_there:
+                return {
+                    "id": entry["id"],
+                    "name": name,
+                    "relpath": entry["relpath"],
+                    "size": entry["size"],
+                    "w": entry["w"],
+                    "h": entry["h"],
+                    "taken_at": entry["exif_taken"],
+                    "duplicate": True,
+                }
+
+    def _merge(index):
+        index["entries"][entry["id"]] = entry
+        return None
+
+    _mutate_index(cfg, user, _merge)
+
+    return {
+        "id": entry["id"],
+        "name": name,
+        "relpath": entry["relpath"],
+        "size": entry["size"],
+        "w": entry["w"],
+        "h": entry["h"],
+        "taken_at": entry["exif_taken"],
+        "duplicate": False,
+    }
 
 
 def get_photo_detail(cfg: Dict[str, Any], user: Optional[Dict[str, Any]], resolver,

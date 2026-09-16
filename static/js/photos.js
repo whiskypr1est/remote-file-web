@@ -597,7 +597,19 @@ class PhotosApp {
   }
 
   /* ======================================================================
-     看大图
+     看大图（全屏灯箱）
+     ----------------------------------------------------------------------
+     为什么做成**铺满整屏**，而不是窗口里的一个面板：
+
+       原来那块地方就在窗口内部，右侧的编辑面板还要切掉一截，于是竖拍的照片
+       只剩很小一块，而且完全不能放大。现在灯箱挂在 document.body 上
+       （不在窗口里），所以：
+         * 图片在**整屏**正中，先按「适应窗口」最大化显示；
+         * 滚轮缩放、按住拖动平移、双击在「适应 / 原始大小」之间切换；
+         * 右侧的信息与编辑面板可以整个收起来，图片就占满整屏。
+
+     层级刻意用 2000：高于窗口层（100）与任务栏（1000），但低于对话框
+     （7000）—— 这样查看器里弹「确认清除时间」仍然显示在最上面。
      ====================================================================== */
 
   openViewer(id) {
@@ -615,7 +627,309 @@ class PhotosApp {
 
     this._viewerList = list;
     this._viewerIndex = index;
+    this._ensureViewer();
     this._renderViewer();
+  }
+
+  _imgEl() {
+    return this._viewer ? this._viewer.querySelector('[data-role="img"]') : null;
+  }
+
+  _stageEl() {
+    return this._viewer ? this._viewer.querySelector('.ph-lb-stage') : null;
+  }
+
+  /** 「适应窗口」的缩放比（按图片原始像素与舞台尺寸算） */
+  _fitScale() {
+    const img = this._imgEl();
+    const stage = this._stageEl();
+    if (!img || !stage) {
+      return 1;
+    }
+    const width = img.naturalWidth || 0;
+    const height = img.naturalHeight || 0;
+    if (!width || !height || !stage.clientWidth || !stage.clientHeight) {
+      return 1;
+    }
+    return Math.min(stage.clientWidth / width, stage.clientHeight / height);
+  }
+
+  /**
+   * 把当前的缩放与平移写到 img 上。
+   *
+   * ★ 这里**不用** max-width/max-height 来「适应」：那样浏览器会先把图片
+   *   缩到容器大小，我们再对它做 scale 就是在**已经缩过的结果**上乘，
+   *   尺寸就全乱了。所以图片始终按原始像素布局，尺寸完全由 transform 决定。
+   */
+  _applyZoom() {
+    const img = this._imgEl();
+    const stage = this._stageEl();
+    if (!img || !stage) {
+      return;
+    }
+
+    if (this._fitMode) {
+      this._zoom = this._fitScale();
+      this._panX = 0;
+      this._panY = 0;
+    }
+
+    const scale = Math.max(0.02, Math.min(20, this._zoom || 1));
+    this._zoom = scale;
+
+    const dispW = (img.naturalWidth || 0) * scale;
+    const dispH = (img.naturalHeight || 0) * scale;
+
+    /* 图比舞台小就强制居中；比舞台大才允许拖动，而且不能把图拖出舞台外 */
+    const maxX = Math.max(0, (dispW - stage.clientWidth) / 2);
+    const maxY = Math.max(0, (dispH - stage.clientHeight) / 2);
+    this._panX = Math.max(-maxX, Math.min(maxX, this._panX || 0));
+    this._panY = Math.max(-maxY, Math.min(maxY, this._panY || 0));
+
+    img.style.visibility = 'visible';
+    img.style.transform = 'translate(' + this._panX + 'px,' + this._panY + 'px) scale(' + scale + ')';
+    img.style.cursor = (maxX > 0 || maxY > 0) ? 'grab' : 'default';
+
+    const label = this._viewer.querySelector('[data-role="zoom"]');
+    if (label) {
+      label.textContent = Math.round(scale * 100) + '%';
+    }
+  }
+
+  /** 缩放并把 (originX, originY) 这个点钉在原地（滚轮缩放的手感靠它） */
+  _zoomTo(newScale, originX, originY) {
+    const stage = this._stageEl();
+    if (!stage) {
+      return;
+    }
+    const rect = stage.getBoundingClientRect();
+    const centerX = rect.left + rect.width / 2;
+    const centerY = rect.top + rect.height / 2;
+
+    const target = Math.max(0.02, Math.min(20, newScale));
+    const ratio = target / (this._zoom || 1);
+
+    const dx = (originX == null) ? 0 : (originX - centerX);
+    const dy = (originY == null) ? 0 : (originY - centerY);
+
+    this._panX = dx - (dx - (this._panX || 0)) * ratio;
+    this._panY = dy - (dy - (this._panY || 0)) * ratio;
+    this._zoom = target;
+    this._fitMode = false;
+    this._applyZoom();
+  }
+
+  /** 回到「适应窗口」（true）或「原始大小」（false） */
+  _resetZoom(fit) {
+    this._fitMode = !!fit;
+    if (!fit) {
+      this._zoom = 1;
+      this._panX = 0;
+      this._panY = 0;
+    }
+    this._applyZoom();
+  }
+
+  _togglePanel() {
+    if (!this._viewer) {
+      return;
+    }
+    this._viewer.classList.toggle('no-panel');
+    /* 面板收起来之后舞台变宽，正在「适应窗口」时要重新算一次 */
+    this._applyZoom();
+  }
+
+  /** 建一次灯箱的 DOM 并把事件挂好（挂在 document.body 上，不在窗口里） */
+  _ensureViewer() {
+    if (this._viewer) {
+      return;
+    }
+    const self = this;
+
+    this._viewer = document.createElement('div');
+    this._viewer.className = 'ph-lightbox';
+    this._viewer.innerHTML =
+      '<div class="ph-lb-top">' +
+        '<div class="ph-lb-title" data-role="vt"></div>' +
+        '<div class="ph-lb-tools">' +
+          '<button data-act="zoom-out" title="缩小（-）">−</button>' +
+          '<span class="ph-lb-zoom" data-role="zoom">100%</span>' +
+          '<button data-act="zoom-in" title="放大（+）">+</button>' +
+          '<button data-act="fit" title="适应窗口（0）">适应</button>' +
+          '<button data-act="actual" title="原始大小（1）">1:1</button>' +
+          '<span class="ph-lb-sep"></span>' +
+          '<button data-act="info" title="显示 / 隐藏信息面板（I）">' + icon('info') + '</button>' +
+          '<button data-act="dl" title="下载原图">' + icon('download') + '</button>' +
+          '<button data-act="close" title="关闭（Esc）">' + icon('close') + '</button>' +
+        '</div>' +
+      '</div>' +
+      '<div class="ph-lb-body">' +
+        '<div class="ph-lb-stage">' +
+          '<button class="ph-lb-nav prev" data-act="prev" title="上一张（←）">‹</button>' +
+          '<img class="ph-lb-img" data-role="img" alt="">' +
+          '<button class="ph-lb-nav next" data-act="next" title="下一张（→）">›</button>' +
+          '<div class="ph-lb-hint">滚轮缩放 · 按住拖动平移 · 双击切换「适应 / 原始大小」</div>' +
+        '</div>' +
+        '<aside class="ph-lb-side" data-role="side-panel"></aside>' +
+      '</div>';
+
+    this._viewer.addEventListener('click', function (event) {
+      const button = event.target.closest('button');
+      if (!button) {
+        return;
+      }
+      /* ★ 一律通过 self._viewerList / _viewerIndex 取当前这张，
+         不要闭包捕获 list —— 换一批照片再看时会指向旧数组。 */
+      const current = (self._viewerList || [])[self._viewerIndex];
+      if (!current) {
+        return;
+      }
+      const act = button.dataset.act;
+      if (act === 'close') {
+        self._closeViewer();
+      } else if (act === 'prev') {
+        self._stepViewer(-1);
+      } else if (act === 'next') {
+        self._stepViewer(1);
+      } else if (act === 'zoom-in') {
+        self._zoomTo((self._zoom || 1) * 1.25);
+      } else if (act === 'zoom-out') {
+        self._zoomTo((self._zoom || 1) / 1.25);
+      } else if (act === 'fit') {
+        self._resetZoom(true);
+      } else if (act === 'actual') {
+        self._resetZoom(false);
+      } else if (act === 'info') {
+        self._togglePanel();
+      } else if (act === 'dl') {
+        api.triggerDownload(api.photoRawUrl(current.id, true));
+      } else if (act === 'save') {
+        self.saveViewerEdit(current);
+      } else if (act === 'revert') {
+        self.clearTimeOverride(current.id);
+      } else if (act === 'same-place') {
+        self.applyPlaceToSameGps(current);
+      }
+    });
+
+    const stage = this._stageEl();
+
+    /* 滚轮缩放：以**鼠标所在的那个点**为中心，而不是以图片中心 ——
+       后者在放大看细节时会让人觉得「图跑掉了」 */
+    stage.addEventListener('wheel', function (event) {
+      if (!self._viewer) {
+        return;
+      }
+      event.preventDefault();
+      const factor = event.deltaY < 0 ? 1.15 : (1 / 1.15);
+      self._zoomTo((self._zoom || 1) * factor, event.clientX, event.clientY);
+    }, { passive: false });
+
+    /* 拖动平移。move / up 绑在 document 上：拖到灯箱外也能跟手，
+       而且松手一定收得到（否则会一直粘着鼠标） */
+    let dragging = false;
+    let moved = 0;
+    let startX = 0;
+    let startY = 0;
+    let baseX = 0;
+    let baseY = 0;
+
+    stage.addEventListener('mousedown', function (event) {
+      if (event.button !== 0) {
+        return;
+      }
+      dragging = true;
+      moved = 0;
+      startX = event.clientX;
+      startY = event.clientY;
+      baseX = self._panX || 0;
+      baseY = self._panY || 0;
+      event.preventDefault();
+    });
+
+    this._onDragMove = function (event) {
+      if (!dragging) {
+        return;
+      }
+      moved = Math.abs(event.clientX - startX) + Math.abs(event.clientY - startY);
+      self._panX = baseX + (event.clientX - startX);
+      self._panY = baseY + (event.clientY - startY);
+      self._applyZoom();
+    };
+    this._onDragUp = function () {
+      if (!dragging) {
+        return;
+      }
+      dragging = false;
+      self._applyZoom();
+    };
+    document.addEventListener('mousemove', this._onDragMove);
+    document.addEventListener('mouseup', this._onDragUp);
+
+    /* 双击在「适应窗口」与「原始大小」之间切换（和常见看图工具一致） */
+    stage.addEventListener('dblclick', function (event) {
+      if (event.target.closest('button')) {
+        return;
+      }
+      if (self._fitMode) {
+        self._resetZoom(false);
+      } else {
+        self._resetZoom(true);
+      }
+    });
+
+    /* 点空白处关闭。★ 只在「没拖动过」时关：拖完图松手那一下也会产生
+       click，不加这个判断的话平移一次就把查看器关了。 */
+    stage.addEventListener('click', function (event) {
+      if (event.target !== stage && !event.target.classList.contains('ph-lb-img')) {
+        return;
+      }
+      if (moved > 4) {
+        return;
+      }
+      self._closeViewer();
+    });
+
+    /* 键盘：翻页、缩放、开关面板、关闭。
+       绑在 document 上，这样不用先点一下灯箱 */
+    this._onKeyDown = function (event) {
+      if (!self._viewer) {
+        return;
+      }
+      const key = event.key;
+      if (key === 'Escape') {
+        self._closeViewer();
+      } else if (key === 'ArrowLeft') {
+        self._stepViewer(-1);
+        event.preventDefault();
+      } else if (key === 'ArrowRight') {
+        self._stepViewer(1);
+        event.preventDefault();
+      } else if (key === '+' || key === '=') {
+        self._zoomTo((self._zoom || 1) * 1.25);
+        event.preventDefault();
+      } else if (key === '-' || key === '_') {
+        self._zoomTo((self._zoom || 1) / 1.25);
+        event.preventDefault();
+      } else if (key === '0' || key === 'f' || key === 'F') {
+        self._resetZoom(true);
+      } else if (key === '1') {
+        self._resetZoom(false);
+      } else if (key === 'i' || key === 'I') {
+        self._togglePanel();
+      }
+    };
+    document.addEventListener('keydown', this._onKeyDown);
+
+    /* 浏览器窗口尺寸变了要重算「适应窗口」的比例，否则会留白或溢出 */
+    this._onResize = function () {
+      if (self._viewer && self._fitMode) {
+        self._applyZoom();
+      }
+    };
+    window.addEventListener('resize', this._onResize);
+
+    document.body.appendChild(this._viewer);
   }
 
   _renderViewer() {
@@ -627,83 +941,34 @@ class PhotosApp {
       return;
     }
 
-    if (!this._viewer) {
-      this._viewer = document.createElement('div');
-      this._viewer.className = 'ph-viewer';
-      this._viewer.innerHTML =
-        '<div class="ph-viewer-top">' +
-          '<div class="ph-viewer-title" data-role="vt"></div>' +
-          '<div class="ph-viewer-tools">' +
-            '<button data-act="dl" title="下载原图">' + icon('download') + '</button>' +
-            '<button data-act="close" title="关闭">' + icon('close') + '</button>' +
-          '</div>' +
-        '</div>' +
-        '<div class="ph-viewer-stage">' +
-          '<button class="ph-viewer-nav prev" data-act="prev" title="上一张">‹</button>' +
-          '<img class="ph-viewer-img" data-role="img" alt="">' +
-          '<button class="ph-viewer-nav next" data-act="next" title="下一张">›</button>' +
-        '</div>' +
-        '<div class="ph-viewer-side" data-role="side-panel"></div>';
-
-      this._viewer.addEventListener('click', function (event) {
-        const button = event.target.closest('button');
-        if (!button) {
-          return;
-        }
-        /* ★ 一律通过 self._viewerList / _viewerIndex 取当前这张，
-           不要闭包捕获 list —— 换一批照片再看时会指向旧数组。 */
-        const current = (self._viewerList || [])[self._viewerIndex];
-        if (!current) {
-          return;
-        }
-        const act = button.dataset.act;
-        if (act === 'close') {
-          self._closeViewer();
-        } else if (act === 'prev') {
-          self._stepViewer(-1);
-        } else if (act === 'next') {
-          self._stepViewer(1);
-        } else if (act === 'dl') {
-          api.triggerDownload(api.photoRawUrl(current.id, true));
-        } else if (act === 'save') {
-          self.saveViewerEdit(current);
-        } else if (act === 'revert') {
-          self.clearTimeOverride(current.id);
-        } else if (act === 'same-place') {
-          self.applyPlaceToSameGps(current);
-        }
-      });
-
-      this.root.appendChild(this._viewer);
-
-      /* 键盘：← → 翻页，Esc 关闭。绑在 document 上，这样不用先点一下窗口 */
-      this._onKeyDown = function (event) {
-        if (!self._viewer) {
-          return;
-        }
-        if (event.key === 'Escape') {
-          self._closeViewer();
-        } else if (event.key === 'ArrowLeft') {
-          self._stepViewer(-1);
-          event.preventDefault();
-        } else if (event.key === 'ArrowRight') {
-          self._stepViewer(1);
-          event.preventDefault();
-        }
-      };
-      document.addEventListener('keydown', this._onKeyDown);
-    }
-
     this._viewer.querySelector('[data-role="vt"]').textContent =
       photo.name + '   (' + (this._viewerIndex + 1) + ' / ' + list.length + ')';
 
-    const img = this._viewer.querySelector('[data-role="img"]');
+    const img = this._imgEl();
+    /* 换一张就回到「适应窗口」，并且先藏起来 —— 否则大图会先以原始尺寸
+       闪一下（那一下看起来就像图错位了） */
+    img.style.visibility = 'hidden';
+    this._fitMode = true;
+    this._panX = 0;
+    this._panY = 0;
+
     if (photo.missing) {
       img.removeAttribute('src');
       img.alt = '文件已经不在了';
-    } else {
-      img.src = api.photoRawUrl(photo.id, false);
-      img.alt = photo.name;
+      this._renderViewerPanel(photo);
+      return;
+    }
+
+    img.alt = photo.name;
+    img.onload = function () {
+      /* 尺寸要等加载完才知道，所以「适应窗口」必须在 onload 里再算一次 */
+      self._resetZoom(true);
+    };
+    img.src = api.photoRawUrl(photo.id, false);
+
+    /* 缓存命中的图片不会再触发 onload，这里补一次 */
+    if (img.complete && img.naturalWidth) {
+      this._resetZoom(true);
     }
 
     this._renderViewerPanel(photo);
@@ -826,12 +1091,28 @@ class PhotosApp {
       document.removeEventListener('keydown', this._onKeyDown);
       this._onKeyDown = null;
     }
+    if (this._onDragMove) {
+      document.removeEventListener('mousemove', this._onDragMove);
+      this._onDragMove = null;
+    }
+    if (this._onDragUp) {
+      document.removeEventListener('mouseup', this._onDragUp);
+      this._onDragUp = null;
+    }
+    if (this._onResize) {
+      window.removeEventListener('resize', this._onResize);
+      this._onResize = null;
+    }
     if (this._viewer) {
       this._viewer.remove();
       this._viewer = null;
     }
     this._viewerList = null;
     this._viewerIndex = -1;
+    this._zoom = 1;
+    this._panX = 0;
+    this._panY = 0;
+    this._fitMode = true;
   }
 
   /* ======================================================================
@@ -1080,85 +1361,315 @@ class PhotosApp {
       ui.showAlert('读取根目录失败', (err && err.message) || String(err), 'error');
       return;
     }
-    if (!roots.length) {
-      /* 子用户一个目录都没分到时走这里 —— 要说明白，否则会以为是坏了 */
-      ui.showAlert('没有可访问的目录',
-        '你的账号还没有被分配任何目录，所以看不到照片。请联系管理员。', 'warning');
-      return;
-    }
+
+    /* 两个来源：服务器上已有的目录（默认）／从浏览器所在的电脑上传。
+       ★ 上传那条路**不需要**用户有任何可见目录，所以即使一个根都没分配到，
+         也不该把整个对话框挡掉 —— 只把服务器那一栏说明白就行。 */
+    const serverHtml = roots.length
+      ? ('<div class="ph-field-row">' +
+           '<label class="ph-field"><span>位置</span><select data-field="root">' +
+             roots.map(function (root) {
+               return '<option value="' + ui.escapeHtml(root.id) + '">' +
+                 ui.escapeHtml(root.name) + '　' + ui.escapeHtml(root.path) + '</option>';
+             }).join('') +
+           '</select></label>' +
+         '</div>' +
+         '<div class="ph-field"><span>当前目录</span>' +
+           '<div class="ph-crumbs" data-role="crumbs"></div></div>' +
+         '<div class="ph-dirlist" data-role="dirs"></div>' +
+         '<div class="ph-section-note">进入某个文件夹后点「索引这个文件夹」，' +
+           '它会连同子文件夹一起收录。<b>照片不会被复制</b>，原文件留在原处。</div>')
+      : '<div class="ph-section-note">你的账号还没有被分配任何目录，' +
+        '所以看不到服务器上的文件。<br>可以用上面的「从我的电脑上传」把照片传上来。</div>';
 
     const body =
-      '<div class="ph-batch-note">照片**不会被复制**，只是就地记进相册；' +
-      '原文件留在原来的位置。</div>' +
-      '<div class="ph-field-row">' +
-        '<label class="ph-field"><span>位置</span><select data-field="root">' +
-          roots.map(function (root) {
-            return '<option value="' + ui.escapeHtml(root.id) + '">' +
-              ui.escapeHtml(root.name) + '　' + ui.escapeHtml(root.path) + '</option>';
-          }).join('') +
-        '</select></label>' +
+      '<div class="ph-seg ph-seg-wide" data-role="mode">' +
+        '<button data-mode="server" class="on">服务器上的文件夹</button>' +
+        '<button data-mode="upload">从我的电脑上传</button>' +
       '</div>' +
-      '<div class="ph-field"><span>当前目录</span>' +
-        '<div class="ph-crumbs" data-role="crumbs"></div></div>' +
-      '<div class="ph-dirlist" data-role="dirs"></div>' +
-      '<div class="ph-section-note">进入某个文件夹后点「索引这个文件夹」，它会连同子文件夹一起收录。</div>';
+
+      '<div data-role="server-pane">' + serverHtml + '</div>' +
+
+      '<div data-role="upload-pane" hidden>' +
+        '<div class="ph-drop" data-role="drop">' +
+          '<div class="ph-drop-ico">' + icon('upload') + '</div>' +
+          '<div class="ph-drop-text">把照片拖到这里，或者' +
+            '<button type="button" class="ph-link" data-act="pick">选择照片…</button></div>' +
+          '<div class="ph-drop-hint">可以一次选多张。照片会上传到服务器，' +
+            '然后立刻出现在时间轴上。</div>' +
+        '</div>' +
+        '<input type="file" accept="image/*" multiple hidden data-role="files">' +
+        '<div class="ph-upload-list" data-role="list"></div>' +
+        '<div class="ph-upload-progress" data-role="progress" hidden>' +
+          '<div class="ph-upload-bar"><i data-role="bar"></i></div>' +
+          '<div class="ph-upload-text" data-role="ptext"></div>' +
+        '</div>' +
+      '</div>';
 
     const modal = this._openModal('导入照片', body, '索引这个文件夹', function (form) {
-      const root = form.querySelector('[data-field="root"]').value;
-      return self._doImport(root, form.dataset.path || '');
+      if (form.dataset.mode === 'upload') {
+        return self._doUpload(form);
+      }
+      const rootField = form.querySelector('[data-field="root"]');
+      if (!rootField) {
+        return false;
+      }
+      return self._doImport(rootField.value, form.dataset.path || '');
     }, { keepOpen: true });
 
-    const rootSelect = modal.querySelector('[data-field="root"]');
-    const crumbs = modal.querySelector('[data-role="crumbs"]');
-    const dirs = modal.querySelector('[data-role="dirs"]');
     const form = modal.querySelector('.ph-modal-body');
+    const modeBox = form.querySelector('[data-role="mode"]');
+    const okButton = modal.querySelector('.ph-modal-foot [data-act="ok"]');
+    form.dataset.mode = 'server';
     form.dataset.path = '';
 
-    async function browse(rootId, path) {
-      form.dataset.path = path;
-      crumbs.textContent = (path || '（根目录）');
-      dirs.innerHTML = '<div class="ph-side-hint">正在读取…</div>';
-      try {
-        const data = await api.listDir({ root: rootId, path: path, sort: 'name', order: 'asc' });
-        const folders = (data.entries || []).filter(function (entry) { return entry.is_dir; });
-        let html = '';
-        if (path) {
-          html += '<div class="ph-dir up" data-dir="..">↰ 上一层</div>';
-        }
-        if (!folders.length) {
-          html += '<div class="ph-side-hint">这个文件夹里没有子文件夹，可以直接索引它。</div>';
-        }
-        folders.forEach(function (entry) {
-          html += '<div class="ph-dir" data-dir="' + ui.escapeHtml(entry.name) + '">' +
-            icon('folder') + '<span>' + ui.escapeHtml(entry.name) + '</span></div>';
-        });
-        dirs.innerHTML = html;
-      } catch (err) {
-        dirs.innerHTML = '<div class="ph-side-hint error">' +
-          ui.escapeHtml((err && err.message) || String(err)) + '</div>';
+    /* ---- 两种来源之间切换 ---- */
+    const serverPane = form.querySelector('[data-role="server-pane"]');
+    const uploadPane = form.querySelector('[data-role="upload-pane"]');
+    const fileInput = form.querySelector('[data-role="files"]');
+    const dropZone = form.querySelector('[data-role="drop"]');
+    const listBox = form.querySelector('[data-role="list"]');
+    const progressBox = form.querySelector('[data-role="progress"]');
+    const progressBar = form.querySelector('[data-role="bar"]');
+    const progressText = form.querySelector('[data-role="ptext"]');
+    let picked = [];
+
+    /* ★ _doUpload 是在**模态框的提交回调**里被调用的，那里拿不到这里的闭包，
+       所以把这份清单放到实例上。picked 始终是同一个数组引用，
+       后面的 push / splice 都会同步过去。 */
+    this._pendingUpload = picked;
+
+    function setMode(mode) {
+      form.dataset.mode = mode;
+      serverPane.hidden = mode !== 'server';
+      uploadPane.hidden = mode !== 'upload';
+      modeBox.querySelectorAll('button').forEach(function (button) {
+        button.classList.toggle('on', button.dataset.mode === mode);
+      });
+      if (okButton) {
+        okButton.textContent = (mode === 'upload') ? '开始上传' : '索引这个文件夹';
+        okButton.disabled = (mode === 'upload') && !picked.length;
       }
     }
 
-    rootSelect.addEventListener('change', function () {
-      browse(rootSelect.value, '');
+    modeBox.addEventListener('click', function (event) {
+      const button = event.target.closest('button');
+      if (button && button.dataset.mode) {
+        setMode(button.dataset.mode);
+      }
     });
 
-    dirs.addEventListener('click', function (event) {
-      const item = event.target.closest('.ph-dir');
-      if (!item) {
+    /* ---- 选文件 / 拖放 ---- */
+    function isImage(file) {
+      return /\.(jpe?g|jfif|png|gif|bmp|webp|tiff?|avif)$/i.test(file.name || '');
+    }
+
+    function acceptFiles(fileList) {
+      const incoming = Array.prototype.slice.call(fileList || []);
+      const skipped = [];
+      incoming.forEach(function (file) {
+        if (!isImage(file)) {
+          skipped.push(file.name + '（不是图片）');
+          return;
+        }
+        const dup = picked.some(function (item) {
+          return item.name === file.name && item.size === file.size;
+        });
+        if (!dup) {
+          picked.push(file);
+        }
+      });
+
+      if (skipped.length) {
+        ui.toast('跳过了 ' + skipped.length + ' 个非图片文件：' + skipped.slice(0, 3).join('、'),
+          'warn', '提示', 6000);
+      }
+      renderList();
+    }
+
+    function renderList() {
+      if (!picked.length) {
+        listBox.innerHTML = '';
+        if (okButton) {
+          okButton.disabled = (form.dataset.mode === 'upload');
+        }
         return;
       }
-      const name = item.dataset.dir;
-      let path = form.dataset.path || '';
-      if (name === '..') {
-        path = path.split('/').slice(0, -1).join('/');
-      } else {
-        path = path ? (path + '/' + name) : name;
+      const total = picked.reduce(function (sum, f) { return sum + f.size; }, 0);
+      let html = '<div class="ph-upload-head">已选 ' + picked.length + ' 张，共 ' +
+        ui.formatSize(total) + '</div>';
+      picked.forEach(function (file, index) {
+        html += '<div class="ph-upload-item">' +
+          '<span class="ph-upload-name">' + ui.escapeHtml(file.name) + '</span>' +
+          '<span class="ph-upload-size">' + ui.formatSize(file.size) + '</span>' +
+          '<button type="button" class="ph-mini" data-remove="' + index + '" title="移除">' +
+            icon('close') + '</button>' +
+          '</div>';
+      });
+      listBox.innerHTML = html;
+      if (okButton) {
+        okButton.disabled = false;
       }
-      browse(rootSelect.value, path);
+    }
+
+    dropZone.addEventListener('click', function (event) {
+      if (event.target.closest('[data-act="pick"]') || event.target === dropZone) {
+        fileInput.click();
+      }
     });
 
-    browse(roots[0].id, '');
+    fileInput.addEventListener('change', function () {
+      acceptFiles(fileInput.files);
+      fileInput.value = '';
+    });
+
+    listBox.addEventListener('click', function (event) {
+      const button = event.target.closest('[data-remove]');
+      if (!button) {
+        return;
+      }
+      picked.splice(Number(button.dataset.remove), 1);
+      renderList();
+    });
+
+    /* 拖放：dragover 必须 preventDefault，否则浏览器会直接打开这个文件 */
+    ['dragenter', 'dragover'].forEach(function (name) {
+      dropZone.addEventListener(name, function (event) {
+        event.preventDefault();
+        event.stopPropagation();
+        dropZone.classList.add('over');
+      });
+    });
+    ['dragleave', 'drop'].forEach(function (name) {
+      dropZone.addEventListener(name, function (event) {
+        event.preventDefault();
+        event.stopPropagation();
+        dropZone.classList.remove('over');
+      });
+    });
+    dropZone.addEventListener('drop', function (event) {
+      const dt = event.dataTransfer;
+      if (dt && dt.files && dt.files.length) {
+        acceptFiles(dt.files);
+      }
+    });
+
+    /* 上传时把进度写进对话框里的进度条 */
+    form.__photoProgress = function (done, total, label) {
+      progressBox.hidden = false;
+      progressBar.style.width = (total ? Math.round(done * 100 / total) : 0) + '%';
+      progressText.textContent = label || '';
+    };
+
+    if (roots.length) {
+      const rootSelect = form.querySelector('[data-field="root"]');
+      const crumbs = form.querySelector('[data-role="crumbs"]');
+      const dirs = form.querySelector('[data-role="dirs"]');
+
+      async function browse(rootId, path) {
+        form.dataset.path = path;
+        crumbs.textContent = (path || '（根目录）');
+        dirs.innerHTML = '<div class="ph-side-hint">正在读取…</div>';
+        try {
+          const data = await api.listDir({ root: rootId, path: path, sort: 'name', order: 'asc' });
+          const folders = (data.entries || []).filter(function (entry) { return entry.is_dir; });
+          let html = '';
+          if (path) {
+            html += '<div class="ph-dir up" data-dir="..">↰ 上一层</div>';
+          }
+          if (!folders.length) {
+            html += '<div class="ph-side-hint">这个文件夹里没有子文件夹，可以直接索引它。</div>';
+          }
+          folders.forEach(function (entry) {
+            html += '<div class="ph-dir" data-dir="' + ui.escapeHtml(entry.name) + '">' +
+              icon('folder') + '<span>' + ui.escapeHtml(entry.name) + '</span></div>';
+          });
+          dirs.innerHTML = html;
+        } catch (err) {
+          dirs.innerHTML = '<div class="ph-side-hint error">' +
+            ui.escapeHtml((err && err.message) || String(err)) + '</div>';
+        }
+      }
+
+      rootSelect.addEventListener('change', function () {
+        browse(rootSelect.value, '');
+      });
+
+      dirs.addEventListener('click', function (event) {
+        const item = event.target.closest('.ph-dir');
+        if (!item) {
+          return;
+        }
+        const name = item.dataset.dir;
+        let path = form.dataset.path || '';
+        if (name === '..') {
+          path = path.split('/').slice(0, -1).join('/');
+        } else {
+          path = path ? (path + '/' + name) : name;
+        }
+        browse(rootSelect.value, path);
+      });
+
+      browse(roots[0].id, '');
+    }
+
+    /* 一个根都没有时直接落到「上传」那一栏，免得用户看着一屏说明发愣 */
+    setMode(roots.length ? 'server' : 'upload');
+  }
+
+  /**
+   * 把选中的文件逐张上传（**串行**）。
+   *
+   * 为什么串行：一次几十张同时发会把连接数和磁盘 IO 都打满，进度也就没法
+   * 说清是第几张了 —— 与音乐批量导入、时长探测是同一个取舍。
+   */
+  async _doUpload(form) {
+    const files = this._pendingUpload || [];
+    if (!files.length) {
+      ui.showAlert('还没有选择照片', '先把照片拖进上面的框，或者点「选择照片…」。', 'warning');
+      return false;
+    }
+
+    const okButton = this.$modal.querySelector('.ph-modal-foot [data-act="ok"]');
+    const report = form.__photoProgress || function () {};
+
+    let done = 0;
+    const failed = [];
+    try {
+      for (let i = 0; i < files.length; i++) {
+        const file = files[i];
+        const label = '正在上传 ' + (i + 1) + '/' + files.length + '：' + file.name;
+        report(0, 1, label);
+        try {
+          await api.photosUpload(file, function (loaded, total) {
+            report(loaded, total, label);
+          });
+          done += 1;
+        } catch (err) {
+          failed.push(file.name + '：' + ((err && err.message) || err));
+        }
+        report(i + 1, files.length, '已完成 ' + (i + 1) + '/' + files.length);
+      }
+    } finally {
+      if (okButton) {
+        okButton.disabled = false;
+      }
+      this._pendingUpload = null;
+    }
+
+    if (done) {
+      ui.toast('已上传 ' + done + ' 张照片', 'success');
+    }
+    if (failed.length) {
+      ui.showAlert('有 ' + failed.length + ' 张没能上传',
+        failed.slice(0, 8).join('\n') + (failed.length > 8 ? '\n…' : ''), 'warning');
+    }
+
+    if (done) {
+      this._closeModal();
+      await this.load();
+    }
+    return done > 0;
   }
 
   async _doImport(root, path) {

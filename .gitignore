@@ -35,6 +35,19 @@ audit.log.jsonl.*
 music_state.json
 music_state.*.json
 
+# ---- 照片（虚拟桌面内置的时间轴相册）------------------------------------
+# ★ 这两个文件里有**用户的个人信息**：photos_state.json 是照片的拍摄时间、
+#   地点、标签与相册（自己改过的时间地点都在这里），photo_index.json 是
+#   本机照片的路径与 EXIF。它们属于部署数据，绝不该进仓库。
+#   多用户下这两类同样按用户各一份（photos_state.<用户名>.json 等）。
+photos_state.json
+photos_state.*.json
+photo_index.json
+photo_index.*.json
+# 从浏览器上传的照片落点（体积大、且是用户自己的东西）。
+# 用 /photos_uploads/ 锚定到项目根目录，免得将来有同名源码目录被一起忽略。
+/photos_uploads/
+
 # ---- 运行时缓存与临时产物 -------------------------------------------------
 thumb_cache/
 office_cache/

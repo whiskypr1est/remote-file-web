@@ -141,6 +141,19 @@ def _photo_error(exc: Exception) -> HTTPException:
     return HTTPException(status_code=400, detail=str(exc))
 
 
+def _safe_unlink(path: str) -> None:
+    """
+    删掉半成品文件（上传中断、索引失败时用）。
+
+    ★ 必须吞掉异常：这一步是在**出错路径**上执行的，如果它自己再抛一个，
+      就会把真正的原因（比如「超过大小上限」）盖成「删除失败」。
+    """
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
+
+
 def _thumb_cache(cfg: Dict[str, Any], state) -> tuple:
     """缩略图缓存目录与体积上限（复用 thumbs 那套配置与 LRU 淘汰）。"""
     thumb_cfg = cfg.get("thumbs") or {}
@@ -319,6 +332,119 @@ async def import_photos(request: Request, payload: ImportPayload) -> Dict[str, A
         raise _photo_error(exc)
 
     return {"ok": True, "background": False, **result}
+
+
+@router.post("/upload")
+async def upload_photo(request: Request, filename: str = "") -> Dict[str, Any]:
+    """
+    从**浏览器所在的电脑**上传一张照片（原始请求体 + `?filename=`，流式落盘）。
+
+    为什么要有它：照片默认是从**服务器上已有的文件**里就地索引的，但用户手上
+    的照片往往在自己那台电脑里（手机导出的、相机卡里的）。没有这个接口就只能
+    先想办法把文件弄到服务器上 —— 那正是文件管理器上传能做的事，但用户不该
+    为此先去开一个资源管理器窗口。
+
+    ★ 与壁纸、文件上传、音乐上传同一套做法：**流式**写盘、边写边数、
+      超限立刻中止并删掉半成品 —— 不用先把整个文件读进内存。
+    ★ 落盘位置与命名（不覆盖、只收图片）由 photos.prepare_upload_target 决定。
+    """
+    from urllib.parse import unquote
+
+    _settings(request)
+    cfg = _cfg(request)
+    user = get_user(request)
+    max_bytes = photos.max_upload_bytes(cfg)
+    blocked = (cfg.get("upload") or {}).get("blocked_extensions") or ()
+
+    raw_name = filename or request.headers.get("x-file-name") or ""
+    if not raw_name:
+        raise HTTPException(status_code=400, detail="缺少文件名参数 filename")
+    try:
+        raw_name = unquote(raw_name)
+    except Exception:  # noqa: BLE001
+        pass
+
+    # 先看 Content-Length：既用于快速拒绝过大的文件，也用于**写入前**检查磁盘空间
+    declared_bytes = 0
+    declared = request.headers.get("content-length")
+    if declared:
+        try:
+            declared_bytes = int(declared)
+        except ValueError:
+            declared_bytes = 0
+        if declared_bytes > max_bytes:
+            raise HTTPException(
+                status_code=413,
+                detail="单张照片不能超过 %d MB" % (max_bytes // (1024 * 1024)),
+            )
+
+    try:
+        final_name, target = photos.prepare_upload_target(
+            cfg, user, raw_name, declared_size=declared_bytes,
+            blocked_extensions=blocked)
+    except photos.PhotoError as exc:
+        raise _photo_error(exc)
+
+    part_path = target + ".part"
+    written = 0
+    try:
+        with open(part_path, "wb") as fh:
+            async for chunk in request.stream():
+                if not chunk:
+                    continue
+                written += len(chunk)
+                # 边写边数：Content-Length 可能缺失或说谎，真正的上限在这里兜底
+                if written > max_bytes:
+                    raise HTTPException(
+                        status_code=413,
+                        detail="单张照片不能超过 %d MB" % (max_bytes // (1024 * 1024)),
+                    )
+                await run_in_threadpool(fh.write, chunk)
+
+        if written == 0:
+            raise HTTPException(status_code=400, detail="上传内容为空")
+
+        os.replace(part_path, target)
+    except HTTPException:
+        _safe_unlink(part_path)
+        raise
+    except Exception as exc:  # noqa: BLE001
+        _safe_unlink(part_path)
+        raise HTTPException(status_code=500, detail="保存照片失败：%s" % exc)
+
+    # 落盘成功就立刻索引进去 —— 用户下一眼就该在时间轴上看到它
+    try:
+        item = await run_in_threadpool(
+            photos.index_upload, cfg, user, resolver_of(request), target, final_name)
+    except photos.PhotoError as exc:
+        _safe_unlink(target)
+        raise _photo_error(exc)
+    except Exception as exc:  # noqa: BLE001
+        _safe_unlink(target)
+        raise HTTPException(status_code=500, detail="索引上传的照片失败：%s" % exc)
+
+    # ★ 内容重复：照片的身份就是内容指纹，同一张传两遍只该在相册里出现一次。
+    #   刚写下的那份要删掉 —— 留着它在磁盘上就是个永远不会被索引的副本
+    #   （用户看不到、也不会去删），而且还占着空间。这里必须明说，
+    #   不能让用户以为「我传了两张，怎么只有一张」。
+    if item.get("duplicate"):
+        _safe_unlink(target)
+        return {
+            "ok": True,
+            "photo": item,
+            "size": written,
+            "duplicate": True,
+            "message": "「%s」和相册里已有的那张内容完全相同，已跳过（没有重复保存）"
+                       % final_name,
+        }
+
+    return {
+        "ok": True,
+        "photo": item,
+        "size": written,
+        "duplicate": False,
+        "message": "已上传「%s」" % final_name,
+    }
 
 
 @router.post("/rescan")

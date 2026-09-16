@@ -175,6 +175,9 @@ STATE_PATH_TARGETS = {
     #   两个都要重定向 —— 漏掉任何一个，用临时配置起的测试服务都会去写真实部署。
     "photos.state_path": "photos_state.json",
     "photos.index_path": "photo_index.json",
+    # ★ 从浏览器上传的照片的落点。不重定向的话，用临时配置起的测试服务
+    #   会把上传的文件写进真实部署的 photos_uploads/。
+    "photos.upload_dir": "photos_uploads",
     "thumbs.cache_dir": "thumbs",
     "office.cache_dir": "office",
 }
