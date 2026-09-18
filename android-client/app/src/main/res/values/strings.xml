@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">远程桌面</string>
+
+    <string name="dialog_title_first">连接服务器</string>
+    <string name="dialog_title">服务器地址</string>
+    <string name="dialog_hint">输入服务器的地址，例如 192.168.1.100:8000\n（只填 IP 时会自动补上 http:// 与 :8000）</string>
+    <string name="label_server">服务器</string>
+    <string name="label_keep_awake">办公时保持屏幕常亮</string>
+    <string name="action_connect">连接</string>
+    <string name="action_reload">刷新</string>
+    <string name="action_cancel">取消</string>
+    <string name="action_retry">重试</string>
+    <string name="action_change">修改地址</string>
+
+    <string name="err_bad_address">地址填得不对，至少要有一个 IP 或主机名。</string>
+    <string name="err_no_picker">这台设备上没有可用的文件选择器。</string>
+    <string name="err_connect">连不上服务器</string>
+    <string name="err_connect_hint">请确认：\n· 平板与服务器在同一个局域网（同一个 WiFi）\n· 服务器正在运行（%s）\n· 地址填得对</string>
+    <string name="msg_downloading">已开始下载，可在系统的「下载」里查看</string>
+    <string name="msg_download_failed">下载失败：%s</string>
+    <string name="tip_back">提示：长按「返回」键可以改服务器地址</string>
+</resources>

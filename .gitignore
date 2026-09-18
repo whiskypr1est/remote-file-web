@@ -48,6 +48,20 @@ photo_index.*.json
 # 用 /photos_uploads/ 锚定到项目根目录，免得将来有同名源码目录被一起忽略。
 /photos_uploads/
 
+# ---- 安卓客户端（android-client/）的构建产物 ------------------------------
+# ★ 必须排除：Gradle 一次构建就会产生几百 MB（app/build/ 与 .gradle/），
+#   不加的话 `git add -A` 会把它们连同一堆中间产物一起提交上去。
+#   local.properties 存的是**本机**的 Android SDK 路径，换机器就失效。
+#   （.apk 本身不在这里统一忽略 —— 它已经被 build/ 盖住了；
+#     将来若要刻意提交某个发布包，用 git add -f 明确地加。）
+android-client/local.properties
+android-client/.gradle/
+android-client/build/
+android-client/**/build/
+android-client/captures/
+android-client/.idea/
+android-client/*.iml
+
 # ---- 运行时缓存与临时产物 -------------------------------------------------
 thumb_cache/
 office_cache/

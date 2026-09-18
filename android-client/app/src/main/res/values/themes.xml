@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      用**系统自带**的 Material 主题，不依赖 AndroidX —— 这样整个模块
+      可以做到一个第三方依赖都不引（见 app/build.gradle.kts 末尾的说明）。
+
+      windowBackground 设成黑色：WebView 画出第一帧之前不会闪一下白屏
+      （局域网 http 首屏有几百毫秒，白闪很显眼）。
+
+      colorAccent 取的是网页那套强调色（desktop.css 里那个 #0a6ad6），
+      让原生对话框和网页看起来是一套东西。
+
+      注意：XML 注释里**不能出现连续两个减号**（XML 规范的硬性限制，
+      aapt2 会直接报「注释中不能包含字符串」并让构建失败）。所以这个文件
+      的注释里不写任何带连续减号的东西 —— 包括那个 CSS 变量名。
+      第一次构建就是被这个绊了一下，改完记得别再写回去。
+    -->
+    <style name="AppTheme" parent="@android:style/Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@android:color/black</item>
+        <item name="android:colorAccent">#0a6ad6</item>
+    </style>
+</resources>
