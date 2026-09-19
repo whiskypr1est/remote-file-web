@@ -19,7 +19,17 @@ import * as ui from './ui.js';
 import { wm, registerWindowOwner } from './wins.js';
 import { openPreview } from './preview.js';
 import { openEditor, canEditText } from './editor.js';
+import { openTerminal } from './terminal.js';
 import { trackJob } from './jobs.js';
+
+/**
+ * 可以「双击直接运行」的脚本扩展名。
+ *
+ * ★ 与后端 routers/terminal.py 的 RUNNABLE_EXTS **必须保持一致**：
+ *   前端这份只决定「菜单里显不显示」，真正的闸门在服务端（那边会 400）。
+ *   两边跑偏的表现是「菜单里有、点了报错」或者反过来的那种不一致。
+ */
+const RUNNABLE_EXTS = /\.(bat|cmd|ps1)$/i;
 
 /* 已经打开的浏览器窗口：windowId -> ExplorerWindow */
 const openExplorers = new Map();
@@ -1634,6 +1644,11 @@ export class ExplorerWindow {
     const selected = this.selectedEntries();
     const many = selected.length > 1;
     const canWrite = !this.readonly;
+    /* 命令行功能是否可用（服务端 features.terminal）。
+       关闭时不显示「运行 / 在此处打开命令行」—— 点了只会拿到 403。 */
+    const terminalEnabled =
+      !!((this.desktop && this.desktop.info &&
+          this.desktop.info.features && this.desktop.info.features.terminal));
 
     const items = [];
 
@@ -1706,6 +1721,34 @@ export class ExplorerWindow {
         disabled: !canWrite,
         onClick: function () { self.editEntry(entry); }
       });
+    }
+
+    // ---- 「运行脚本」/「在此处打开命令行」--------------------------------
+    // 虚拟桌面能看见服务器上的文件，但**跑起来**是另一件事：
+    //   * 双击 .bat 目前只会进编辑器（.bat 在 fsops.py 里登记成 code 类型），
+    //     那是「改脚本」不是「跑脚本」；
+    //   * 批处理里几乎都用相对路径引用同目录的文件（`java -jar server.jar`），
+    //     所以必须能**以脚本所在目录为工作目录**开命令行。
+    // 这两项都只在功能开启时出现（features.terminal），否则点了会弹 403。
+    if (terminalEnabled) {
+      if (!many && !entry.is_dir && RUNNABLE_EXTS.test(entry.name)) {
+        items.push({
+          label: '运行',
+          iconName: 'play',
+          onClick: function () {
+            self.runScript(entry);
+          }
+        });
+      }
+      if (!many && entry.is_dir) {
+        items.push({
+          label: '在此处打开命令行',
+          iconName: 'code',
+          onClick: function () {
+            self.openTerminalHere(entry);
+          }
+        });
+      }
     }
 
     items.push('separator');
@@ -2050,6 +2093,37 @@ export class ExplorerWindow {
   /* =========================================================================
      文件操作
      ========================================================================= */
+
+  /* =========================================================================
+     在虚拟桌面里运行脚本 / 在此处开命令行
+     ========================================================================= */
+
+  /**
+   * 「运行」：新开一个命令行窗口，并在其中执行这个脚本。
+   *
+   * ★ 为什么必须「新开一个终端窗口并让它去跑」而不是后端静默执行：
+   *   运行结果（输出、报错、以及脚本自己要不要继续读输入）都在那个
+   *   命令行窗口里，用户看得见、也能接着操作 —— 这正是「虚拟桌面上
+   *   双击 bat」该有的样子。后端把脚本串进 cmd 的 /K 参数里，
+   *   所以输出留在**这个会话**里（另起进程会跑到别的控制台去）。
+   *
+   * 工作目录由服务端设成脚本所在目录：批处理里几乎都用相对路径引用
+   * 同目录的文件（`java -jar server.jar`），cwd 不对就会直接失败。
+   */
+  runScript(entry) {
+    const rel = entry.rel || (this.relPath ? this.relPath + '/' + entry.name : entry.name);
+    return openTerminal(this.desktop, {
+      run: { root: this.rootId, path: rel }
+    });
+  }
+
+  /** 「在此处打开命令行」：新开一个命令行窗口，工作目录就是这个文件夹 */
+  openTerminalHere(entry) {
+    const rel = entry.rel || (this.relPath ? this.relPath + '/' + entry.name : entry.name);
+    return openTerminal(this.desktop, {
+      startDir: { root: this.rootId, path: rel }
+    });
+  }
 
   /**
    * 把条目发送到虚拟桌面。

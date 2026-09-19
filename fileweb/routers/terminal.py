@@ -141,6 +141,20 @@ _SID_QUERY_KEYS = ("sid", "session", "s")
 
 
 
+class StartDirPayload(BaseModel):
+    """一个「根标识 + 相对路径」引用（沿用文件管理器那套寻址）。"""
+
+    root: str = ""
+    path: str = ""
+
+
+# 允许「双击运行」的扩展名。
+# ★ 只放脚本，不放 .exe：这个功能的定位是「把已经写好的启动脚本跑起来」。
+#   .exe 直接双击在真实桌面上是另一个风险量级的东西（而且控制台程序跑起来
+#   也看不到窗口），要跑 exe 请在命令行里敲 —— 终端本来就是全权限的。
+RUNNABLE_EXTS = {".bat", ".cmd", ".ps1"}
+
+
 class SessionPayload(BaseModel):
     """
     创建会话的请求体。
@@ -148,10 +162,25 @@ class SessionPayload(BaseModel):
     cols/rows 是客户端 xterm.js 量出来的**真实**列宽与行高。
     必须在创建时一并传过来：ConPTY 是在 spawn 那一刻把初始尺寸交给内核的，
     虽然之后可以用 resize 消息纠正，但那样第一屏的换行位置会先错一次。
+
+    ★ 下面两个可选字段实现「在虚拟桌面里直接运行脚本」：
+
+      start_dir  以某个**目录**为工作目录开命令行（资源管理器右键
+                 「在此处打开命令行」）。批处理里几乎都用相对路径引用同目录的
+                 文件（`java -jar server.jar`），cwd 不对就会直接失败。
+
+      run        启动时立刻执行某个**文件**（双击 .bat → 「运行」）。
+                 它会被串进同一个命令行（cmd 的 /K 参数里），所以输出留在
+                 本会话里；cwd 自动取该文件所在目录。
+
+    两者都用「根标识 + 相对路径」表达，并且**必须过用户自己的解析器** ——
+    路径闸门只有一道，不能因为从终端进来就放行（见 security.PathResolver）。
     """
 
     cols: int = 120
     rows: int = 30
+    start_dir: Optional[StartDirPayload] = None
+    run: Optional[StartDirPayload] = None
 
 
 # ---------------------------------------------------------------------------
@@ -245,8 +274,44 @@ async def create_session(request: Request, payload: Optional[SessionPayload] = N
     require_feature(request, "terminal", "命令提示符")
 
     shell = str(tcfg.get("shell") or "cmd.exe")
-    start_dir = _resolve_start_dir(resolver_of(request), tcfg, state.base_dir)
+    resolver = resolver_of(request)
+    start_dir = _resolve_start_dir(resolver, tcfg, state.base_dir)
     idle_timeout = int(tcfg.get("idle_timeout_seconds") or 0)
+
+    # ---- 「在此处打开命令行」/「运行脚本」----------------------------------
+    # ★ 两者都必须过**当前用户的**解析器：路径闸门只有一道。从终端这条路
+    #   进来的 cwd / 可执行文件同样能读全机文件（终端本来就是全权限 shell），
+    #   但接口层面仍要按同一个口径收敛，免得出现「绕过解析器」的第二条路。
+    run_file = ""
+    if payload is not None and getattr(payload, "run", None) is not None:
+        try:
+            _root, abs_run = resolver.resolve(payload.run.root, payload.run.path)
+        except Exception as exc:                                # noqa: BLE001
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
+        if not os.path.isfile(abs_run):
+            raise HTTPException(status_code=404,
+                                detail="要运行的文件不存在：%s" % payload.run.path)
+        ext = os.path.splitext(abs_run)[1].lower()
+        if ext not in RUNNABLE_EXTS:
+            raise HTTPException(
+                status_code=400,
+                detail="只能直接运行脚本（%s），当前是 %s。"
+                       "要运行别的程序请在命令行里输入。"
+                       % ("/".join(sorted(RUNNABLE_EXTS)), ext or "无扩展名"))
+        run_file = abs_run
+        # ★ cwd 取脚本所在目录：批处理里几乎都用相对路径引用同目录的文件
+        #   （`java -jar server.jar`），cwd 不对就直接失败。
+        start_dir = os.path.dirname(abs_run) or start_dir
+    elif payload is not None and getattr(payload, "start_dir", None) is not None:
+        try:
+            _root, abs_dir = resolver.resolve(payload.start_dir.root,
+                                              payload.start_dir.path)
+        except Exception as exc:                                # noqa: BLE001
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
+        if not os.path.isdir(abs_dir):
+            raise HTTPException(status_code=404,
+                                detail="目录不存在：%s" % payload.start_dir.path)
+        start_dir = abs_dir
 
     # ★ 命令行名额现在是**每用户**的（用户决定：每人 5 个窗口）。
     # 涉及两个数，取小的那个：
@@ -294,6 +359,7 @@ async def create_session(request: Request, payload: Optional[SessionPayload] = N
             max_output_kb=max_output_kb,
             evict_grace=evict_grace,
             owner=owner,
+            run=run_file,
             max_total=max_total,
         )
     except TerminalLimitError as exc:

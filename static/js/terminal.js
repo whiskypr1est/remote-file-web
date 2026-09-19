@@ -131,9 +131,15 @@ const WS_CLOSE_REPLACED_CODES = [4001, 4401];  // 会话已被新的连接接管
  * 一个 shell，否则每打开一次页面就会多出一个没人用的 cmd.exe。
  *
  * @param {object} desktop 桌面实例（desktop.js 的 Desktop）
+ * @param {object} [opts]  可选：
+ *        opts.startDir = {root, path}  以该**目录**为工作目录开命令行
+ *                                      （资源管理器右键「在此处打开命令行」）
+ *        opts.run      = {root, path}  启动时立刻执行该**脚本**
+ *                                      （双击 .bat → 「运行」）
+ *        两者都由服务端用当前用户的解析器校验；这里只负责传过去。
  * @returns {Promise<object|null>} 窗口记录，失败时返回 null
  */
-export async function openTerminal(desktop) {
+export async function openTerminal(desktop, opts) {
   // 服务端关掉了这个功能时入口本来就不显示；这里再兜一层，
   // 防止通过控制台手动调用绕过限制后拿到一个没用的窗口。
   const features = (desktop && desktop.info && desktop.info.features) || {};
@@ -142,15 +148,23 @@ export async function openTerminal(desktop) {
     return null;
   }
 
+  const body = {};
+  const options = opts || {};
+  if (options.run) {
+    body.run = options.run;
+  } else if (options.startDir) {
+    body.start_dir = options.startDir;
+  }
+
   let session;
   try {
-    session = await api.request('POST', '/api/terminal/session', { json: {} });
+    session = await api.request('POST', '/api/terminal/session', { json: body });
   } catch (err) {
     if (err && err.status === 401) {
       return null; // api 层已经跳转登录页
     }
     ui.showAlert(
-      '无法打开命令提示符',
+      options.run ? '无法运行该脚本' : '无法打开命令提示符',
       (err && err.message) || '创建命令行会话失败，请稍后重试。',
       'error'
     );

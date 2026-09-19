@@ -249,7 +249,7 @@ def _parse_code_page(raw: bytes) -> Optional[int]:
 # 命令行参数构造
 # ---------------------------------------------------------------------------
 
-def _build_argv(shell: str) -> List[str]:
+def _build_argv(shell: str, run: str = "") -> List[str]:
     """
     根据配置里的 shell 生成启动参数。
 
@@ -264,18 +264,49 @@ def _build_argv(shell: str) -> List[str]:
     （验证只覆盖了 cmd.exe），配置成 PowerShell 时请自行确认。
 
     其它 shell 一律走「裸启动」，不做任何假设。
+
+    ``run``（可选）是要**在启动时立刻执行**的那个文件（绝对路径），
+    用来实现「在虚拟桌面里双击 .bat 直接运行」。
+
+    ★★ 路径的引号问题是个大坑，这里是实测出来的结论，别改回去 ★★
+
+      正确做法：**把 `call` 与路径作为两个独立的 argv 元素**，我们自己
+      **绝不给路径加引号**：
+
+          [shell, "/Q", "/K", "call", <路径>]
+
+      为什么不能自己加引号：调用方（pywinpty / subprocess）在拼命令行时，
+      会给含空格的参数加引号，并把参数**内部**的引号转义成 `\\"`。
+      于是我们写的 `"C:\\a b\\x.bat"` 到了 cmd 那里变成 `\\"C:\\a b\\x.bat\\"`，
+      cmd 直接报「不是内部或外部命令」。实测：自己加引号的六种写法**全军覆没**，
+      而把路径当独立参数交出去的写法**全部成功**（含空格、含中文都行）。
+
+      为什么用 `call`：它是从命令行调用批处理的正规方式，脚本结束后控制权
+      正常回到本 shell（对应 /K 保持常驻）。
+
+      为什么这里**不带** `prompt $P$G`：实测 `cmd /K "prompt $P$G & call" <路径>`
+      这种串接在路径含空格时会失败（参数边界与引号打架）。而 cmd 的默认提示符
+      本来就是 `$P$G`（`C:\\path>`），所以脚本窗口不设它没有实际损失；
+      普通命令行窗口那条路**不受影响**，仍然照旧设 prompt。
     """
     name = os.path.basename(shell or "").strip().lower()
 
     if name in ("cmd", "cmd.exe"):
+        if run:
+            return [shell, "/Q", "/K", "call", run]
         return [shell, "/Q", "/K", "prompt $P$G"]
 
     if name in ("powershell", "powershell.exe", "pwsh", "pwsh.exe"):
         # -NoLogo 去横幅；-NoProfile 避免加载用户配置拖慢启动；
         # -NoExit 保证进程不退出（对应 cmd 的 /K）
-        return [shell, "-NoLogo", "-NoProfile", "-NoExit"]
+        argv = [shell, "-NoLogo", "-NoProfile", "-NoExit"]
+        if run:
+            # -File 接路径，同样**不自己加引号**（道理与 cmd 那条相同）；
+            # -NoExit 对 -File 也生效，脚本跑完窗口仍留着。
+            argv += ["-File", run]
+        return argv
 
-    return [shell]
+    return [shell, run] if run else [shell]
 
 
 # ---------------------------------------------------------------------------
@@ -365,10 +396,15 @@ class TerminalSession:
         max_output_kb: int = _DEFAULT_MAX_OUTPUT_KB,
         evict_grace: float = _EVICT_GRACE_SECONDS,
         owner: str = "",
+        run: str = "",
     ):
         self.sid = sid
         self.shell = shell
         self.cwd = start_dir or ""
+        # ★ 启动时要立刻执行的文件（绝对路径，通常是个 .bat）。
+        #   空串 = 普通交互式命令行。实现「双击 .bat 直接运行」用的，
+        #   见 _build_argv 的说明（必须串在同一个命令行里，不能另起进程）。
+        self.run = str(run or "")
         # ★ 会话归属（多用户）：每用户的名额、淘汰范围、以及管理员看到的
         # 「某人几个会话」都靠它。空串 = 无归属（直接构造会话的单元测试走这条，
         # 于是它们全都算作同一个人，行为与改造前一致）。
@@ -486,7 +522,7 @@ class TerminalSession:
         两个后端最终都把输出推进同一个队列，因此 read()/write() 以及路由层
         完全不需要关心背后是哪一种。
         """
-        argv = _build_argv(self.shell)
+        argv = _build_argv(self.shell, self.run)
 
         # cwd 不存在时不要直接失败，退回项目进程的当前目录更可用
         cwd = self.cwd if (self.cwd and os.path.isdir(self.cwd)) else None
@@ -1565,6 +1601,7 @@ class TerminalManager:
         evict_grace: float = _EVICT_GRACE_SECONDS,
         owner: str = "",
         max_total: int = 0,
+        run: str = "",
     ) -> TerminalSession:
         """
         创建一个新会话。
@@ -1642,6 +1679,7 @@ class TerminalManager:
                 max_output_kb=max_output_kb,
                 evict_grace=evict_grace,
                 owner=owner,
+                run=run,
             )
             # 让空闲回收走管理器：它负责先从注册表摘除再关闭（见 set_reap_callback）
             session.set_reap_callback(self.close_session)
