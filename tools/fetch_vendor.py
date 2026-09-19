@@ -39,6 +39,26 @@ SCAN_BYTES = 200000
 
 # winbox.js 固定版本：窗口系统核心库
 WINBOX_VERSION = "0.2.82"
+
+# pdf.js 固定版本：PDF 阅读器的渲染引擎。
+#
+# ★ 这里**故意钉住 v3.11.174，而不是像 xterm 那样取 latest**。
+#   起因是一次真实的故障（平板打开 PDF 黑屏）：
+#     pdf.js 6.x（当时取到 6.3.289）用到了 `Promise.withResolvers()`
+#     （Chrome/WebView 119+）这类很新的 API。桌面浏览器够新、没问题，
+#     但安卓平板的系统 WebView 通常远低于 119（Android 13 出厂约 108），于是：
+#       import 看上去是成功的（前端只检查 getDocument 在不在）
+#       → 到 getDocument 时才抛 TypeError: Promise.withResolvers is not a function
+#       → 前端退回「浏览器内置阅读器」iframe
+#       → 安卓根本没有内置 PDF 渲染器 → 用户看到的是一块黑屏
+#     v3.11.174 是纯 JS：不需要 wasm 子目录，也不用那些新 API，
+#     在很老的 WebView 上照样渲染（实测：人为删掉那些新 API 后依然渲染成功，
+#     而同样条件下 6.3.289 必失败）。
+#
+#   要升级前请先确认目标平板 WebView 的版本；升到 v4+ 还需一并处理
+#   wasm/ 资源与 `.mjs` 的加载方式（static/js/preview.js 的 loadPdfLib
+#   已经保留了 ESM 分支，不会因为改回 .mjs 而失效）。
+PDFJS_VERSION = "3.11.174"
 CDN_LIST = [
     "https://cdn.jsdelivr.net/npm/{pkg}@{ver}/{path}",
     "https://unpkg.com/{pkg}@{ver}/{path}",
@@ -183,14 +203,8 @@ def do_winbox(force):
 
 
 def do_pdfjs(force):
-    print("[2/4] pdf.js (pdfjs-dist)")
-    try:
-        ver = latest_version("pdfjs-dist")
-    except Exception as exc:  # noqa: BLE001
-        ver = "4.10.38"
-        print("  [!] 查询最新版本失败(%s)，回退到 %s" % (exc, ver))
-
-    print("  版本: %s" % ver)
+    print("[2/4] pdf.js (pdfjs-dist) v%s" % PDFJS_VERSION)
+    ver = PDFJS_VERSION
 
     try:
         available = set(list_package_files("pdfjs-dist", ver))
@@ -198,20 +212,34 @@ def do_pdfjs(force):
         available = set()
         print("  [!] 文件清单获取失败(%s)，改用默认路径猜测" % exc)
 
-    # pdf.js 从 v4 起主文件是 .mjs；同时兼容老的 .js 命名
+    # v3 是 UMD 的 pdf.min.js；v4 起改成 ESM 的 pdf.min.mjs。两个都认，
+    # 但**目标文件名跟着源文件走**：把 UMD 存成 .mjs 会误导人，
+    # 也会让静态服务按 JS 模块的 MIME 送出去。
     main_rel = pick(
-        ["build/pdf.min.mjs", "build/pdf.min.js"],
+        ["build/pdf.min.js", "build/pdf.min.mjs"],
         available,
-    ) or "build/pdf.min.mjs"
+    ) or "build/pdf.min.js"
     worker_rel = pick(
-        ["build/pdf.worker.min.mjs", "build/pdf.worker.min.js"],
+        ["build/pdf.worker.min.js", "build/pdf.worker.min.mjs"],
         available,
-    ) or "build/pdf.worker.min.mjs"
+    ) or "build/pdf.worker.min.js"
+
+    main_name = os.path.basename(main_rel)      # pdf.min.js / pdf.min.mjs
+    worker_name = os.path.basename(worker_rel)
 
     plan = [
-        (main_rel, os.path.join(PDF_DIR, "pdf.min.mjs")),
-        (worker_rel, os.path.join(PDF_DIR, "pdf.worker.min.mjs")),
+        (main_rel, os.path.join(PDF_DIR, main_name)),
+        (worker_rel, os.path.join(PDF_DIR, worker_name)),
     ]
+    # 清掉「另一套命名」的残留（例如从 v6 换回 v3 后留下的 .mjs），
+    # 免得同一个目录里躺着两个版本的 pdf.js，让人搞不清实际在跑哪个。
+    stale = {"pdf.min.js", "pdf.worker.min.js",
+             "pdf.min.mjs", "pdf.worker.min.mjs"} - {main_name, worker_name}
+    for name in sorted(stale):
+        leftover = os.path.join(PDF_DIR, name)
+        if os.path.exists(leftover):
+            os.remove(leftover)
+            print("  [--] 删除旧命名残留: %s" % name)
     for rel, dest in plan:
         if os.path.exists(dest) and not force:
             print("  [--] 已存在，跳过: %s" % os.path.relpath(dest, BASE_DIR))
@@ -364,11 +392,18 @@ def verify():
     让这类大文件单独把窗口放大。
     """
     print("\n=== 校验 ===")
+    # pdf.js 的主文件名随版本而变：v3 是 UMD 的 .js，v4+ 是 ESM 的 .mjs。
+    # 按实际存在的那个去校验，避免锁死一个名字导致误报「不存在」。
+    pdf_main = os.path.join(PDF_DIR, "pdf.min.js")
+    pdf_worker = os.path.join(PDF_DIR, "pdf.worker.min.js")
+    if not os.path.exists(pdf_main):
+        pdf_main = os.path.join(PDF_DIR, "pdf.min.mjs")
+        pdf_worker = os.path.join(PDF_DIR, "pdf.worker.min.mjs")
     checks = [
         (os.path.join(VENDOR_DIR, "winbox.min.js"), b"WinBox", 5000),
         (os.path.join(VENDOR_DIR, "winbox.min.css"), b"winbox", 2000),
-        (os.path.join(PDF_DIR, "pdf.min.mjs"), b"pdfjs", 100000),
-        (os.path.join(PDF_DIR, "pdf.worker.min.mjs"), b"pdf", 100000),
+        (pdf_main, b"pdfjs", 100000),
+        (pdf_worker, b"pdf", 100000),
         (os.path.join(XTERM_DIR, "xterm.js"), b"Terminal", 100000),
         (os.path.join(XTERM_DIR, "xterm.css"), b"xterm", 2000),
         (os.path.join(XTERM_DIR, "addon-fit.js"), b"FitAddon", 500),

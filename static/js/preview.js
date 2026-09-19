@@ -320,21 +320,72 @@ function buildImage(container, ctx) {
 
 let pdfLibPromise = null;
 
-/** 懒加载本地 pdf.js（首次打开 PDF 时才下载，避免拖慢桌面启动） */
+const PDF_VENDOR = '/static/vendor/pdf/';
+
+/** 用 <script> 注入传统脚本（UMD 版 pdf.js 走这条路） */
+function loadScriptTag(src) {
+  return new Promise(function (resolve, reject) {
+    const el = document.createElement('script');
+    el.src = src;
+    el.onload = function () { resolve(); };
+    el.onerror = function () { reject(new Error('无法加载 ' + src)); };
+    document.head.appendChild(el);
+  });
+}
+
+/**
+ * 这个环境有没有「浏览器内置 PDF 阅读器」？
+ *
+ * ★ 桌面 Chrome/Edge/Firefox/Safari 有；**安卓一律没有** ——
+ *   Android WebView 与安卓版 Chrome 都不内嵌 PDF 渲染，
+ *   所以 <iframe src="xxx.pdf"> 在平板上永远是**一块黑屏**。
+ *   这正是「平板打开 PDF 黑屏」的直接原因，所以这条兜底路在安卓上必须关掉。
+ */
+function hasNativePdfViewer() {
+  const ua = (navigator && navigator.userAgent) || '';
+  return !/Android/i.test(ua);
+}
+
+/**
+ * 懒加载本地 pdf.js（首次打开 PDF 时才下载，避免拖慢桌面启动）。
+ *
+ * ★ 为什么优先用 UMD 的 pdf.min.js、而不是 ESM 的 pdf.min.mjs：
+ *   pdf.js 6.x 用到了 `Promise.withResolvers()`（Chrome/WebView 119+）这类
+ *   很新的 API，而安卓平板的系统 WebView 通常远低于此（Android 13 出厂约 108）。
+ *   这种情况下 .mjs **仍然能 import 成功**（下面只检查 getDocument 在不在），
+ *   真正的失败发生在 getDocument 那一刻：
+ *       TypeError: Promise.withResolvers is not a function
+ *   → 掉进 catch → 退回「浏览器内置阅读器」iframe → 安卓没有内置 PDF 渲染器
+ *   → 用户看到的就是一块黑。很难查，因为控制台只留一行 console.info。
+ *
+ *   v3.11.174 是纯 JS（不需要 wasm，也不用那些新 API），在很老的 WebView 上
+ *   照样能跑；实测在**人为删掉那些新 API** 的环境里依旧渲染成功，
+ *   而在同样环境下 6.3.289 必抛 `Promise.withResolvers is not a function`。
+ *
+ *   .mjs 分支保留：将来若有人重新装回 v4+，这里仍然能用。
+ */
 function loadPdfLib() {
   if (!pdfLibPromise) {
-    pdfLibPromise = import('/static/vendor/pdf/pdf.min.mjs').then(function (mod) {
-      const lib = (mod && typeof mod.getDocument === 'function') ? mod : (mod.default || mod);
-      if (!lib || typeof lib.getDocument !== 'function') {
-        throw new Error('pdf.js 模块导出异常');
-      }
+    pdfLibPromise = (async function () {
       try {
-        lib.GlobalWorkerOptions.workerSrc = '/static/vendor/pdf/pdf.worker.min.mjs';
+        await loadScriptTag(PDF_VENDOR + 'pdf.min.js');
+        const lib = window.pdfjsLib;
+        if (!lib || typeof lib.getDocument !== 'function') {
+          throw new Error('pdf.min.js 没有导出 pdfjsLib');
+        }
+        lib.GlobalWorkerOptions.workerSrc = PDF_VENDOR + 'pdf.worker.min.js';
+        return lib;
       } catch (err) {
-        /* 忽略：部分版本用 workerPort 配置 */
+        // 没有 .js 就退回 ESM 版（pdf.js v4+ 的文件命名）
+        const mod = await import(PDF_VENDOR + 'pdf.min.mjs');
+        const lib = (mod && typeof mod.getDocument === 'function') ? mod : (mod.default || mod);
+        if (!lib || typeof lib.getDocument !== 'function') {
+          throw new Error('pdf.js 模块导出异常');
+        }
+        lib.GlobalWorkerOptions.workerSrc = PDF_VENDOR + 'pdf.worker.min.mjs';
+        return lib;
       }
-      return lib;
-    });
+    })();
   }
   return pdfLibPromise;
 }
@@ -410,6 +461,12 @@ function buildPdf(container, ctx, options) {
     if (nativeUsed) {
       return;
     }
+    // 安卓没有内置阅读器：塞 iframe 只会得到一块黑屏。
+    // 与其让用户对着黑屏猜，不如直接把原因和出路讲清楚。
+    if (!hasNativePdfViewer()) {
+      useUnavailableFallback(reason);
+      return;
+    }
     nativeUsed = true;
 
     container.innerHTML =
@@ -436,6 +493,37 @@ function buildPdf(container, ctx, options) {
     if (reason) {
       console.info('[pdf] 已切换到浏览器内置阅读器：' + reason);
     }
+  }
+
+  /**
+   * 没有内置阅读器时的兜底：明确说明原因 + 给出出路，而不是留一块黑屏。
+   *
+   * 走到这里意味着同时满足两件事：
+   *   1. 页面内置的渲染器（pdf.js）失败了；
+   *   2. 这台设备没有浏览器内置的 PDF 阅读器 —— 典型就是安卓 WebView。
+   * 此前这种情况会塞一个 iframe，结果是一块黑屏，用户完全不知道发生了什么
+   * （原因只写在 console.info 里，看不到）。
+   */
+  function useUnavailableFallback(reason) {
+    if (nativeUsed) {
+      return;
+    }
+    nativeUsed = true;
+    loadingEl.style.display = 'none';
+    scrollEl.innerHTML = '';
+    messageBox(
+      scrollEl,
+      'error',
+      '这台设备没有内置的 PDF 阅读器（安卓的 WebView 与浏览器都不带），' +
+      '而页面内置的渲染器也没能启动。\n\n' +
+      '可以先把文件下载下来，用别的应用打开。' +
+      (reason ? '\n\n技术原因：' + reason : ''),
+      [
+        { label: '下载文件', iconName: 'download', onClick: function () {
+            api.triggerDownload(api.downloadUrl(ctx.rootId, ctx.rel));
+        } }
+      ]
+    );
   }
 
   async function renderPage(info) {
