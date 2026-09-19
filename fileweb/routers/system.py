@@ -143,6 +143,20 @@ async def system_info(request: Request) -> Dict[str, Any]:
             # 任务管理器（只读系统监控）：同样据此决定开始菜单里是否出现入口
             "sysmon": _allowed("sysmon",
                                bool((cfg.get("sysmon") or {}).get("enabled", True))),
+            # ★ 控制台镜像（方案 A，看真实桌面已开着的命令行窗口）：
+            #   **仅管理员** + 配置开着 + 平台支持，三条**同时**满足才为 true。
+            #   子用户一律 false —— 这个功能能把任意控制台的屏幕内容送到
+            #   浏览器，暴露面比任务管理器大得多，所以不做成「可单独授权」，
+            #   而是硬性限定管理员（见 fileweb/routers/conhost.py 的模块注释）。
+            #   allow_input 是另一个独立开关（默认 false），前端据此决定
+            #   要不要渲染输入区 —— 没打开时它必须是一个纯只读界面。
+            "conhost": bool(
+                is_admin_user
+                and (cfg.get("conhost") or {}).get("enabled", False)
+                and platform.system() == "Windows"),
+            "conhost_allow_input": bool(
+                is_admin_user
+                and (cfg.get("conhost") or {}).get("allow_input", False)),
             # ★ 用户管理（用户列表 / 在线情况 / 审计日志）：**仅管理员**。
             #   前端据此决定开始菜单里是否出现入口 —— 子用户看不到它。
             "users": is_admin_user,

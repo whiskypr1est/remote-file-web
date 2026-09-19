@@ -60,6 +60,13 @@ EVENT_USER_DISABLE = "user_disable"
 EVENT_USER_ENABLE = "user_enable"
 EVENT_USER_KICK = "user_kick"
 EVENT_USER_PASSWORD_RESET = "user_password_reset"
+# ★ 控制台镜像（方案 A）。这两条是**高危**动作：
+#   conhost_read  —— 读了真实桌面上某个控制台的屏幕内容；
+#   conhost_input —— 往那个控制台里注入了按键（等于替人敲键盘）。
+#   读会被前端按秒轮询，所以**不逐次记录**（那会把日志淹掉），
+#   只在「打开某个控制台的镜像」时记一次；输入则每次都记。
+EVENT_CONHOST_READ = "conhost_read"
+EVENT_CONHOST_INPUT = "conhost_input"
 
 
 def set_path(path: str) -> None:

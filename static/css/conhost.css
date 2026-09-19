@@ -1,0 +1,213 @@
+/* ==========================================================================
+   控制台镜像窗口（方案 A）
+   --------------------------------------------------------------------------
+   左侧是真实桌面上的控制台列表，右侧是那个窗口此刻的字符栅格，底部（仅当
+   服务端打开了 conhost.allow_input 时）是输入区。
+
+   配色沿用 desktop.css 的变量，不另起一套。
+   右侧内容是**字符栅格**（不是终端流），所以用等宽字体 + 自己按属性上色，
+   颜色由 JS 内联（服务端返回 16 色属性）。
+   ========================================================================== */
+
+.conhost {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  background: var(--win-bg);
+  color: var(--text);
+  font-size: 13px;
+}
+
+/* ---- 主体：左列表 + 右内容 ---- */
+.conhost-body {
+  flex: 1 1 auto;
+  display: flex;
+  min-height: 0;
+}
+
+.conhost-list {
+  flex: 0 0 268px;
+  overflow: auto;
+  border-right: 1px solid var(--win-border);
+  background: #fbfbfc;
+}
+
+.conhost-item {
+  padding: 8px 10px;
+  border-bottom: 1px solid #eef0f2;
+  cursor: pointer;
+  user-select: none;
+}
+
+.conhost-item:hover {
+  background: #f1f5fb;
+}
+
+.conhost-item.is-active {
+  background: #e7f0fd;
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.conhost-item-title {
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.conhost-item-meta {
+  margin-top: 2px;
+  color: var(--text-dim);
+  font-size: 11.5px;
+}
+
+.conhost-item-procs {
+  margin-top: 2px;
+  color: var(--text-weak);
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.conhost-right {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.conhost-head {
+  flex: 0 0 auto;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--win-border);
+  background: var(--win-header);
+  color: var(--text-dim);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ---- 字符栅格 ---- */
+.conhost-view {
+  flex: 1 1 auto;
+  overflow: auto;
+  /* 控制台本来就是黑底浅字：这样看上去才像那个窗口 */
+  background: #0c0c0c;
+  color: #c0c0c0;
+  padding: 6px 8px;
+  /* 等宽字体：栅格对不齐的话整块内容就没法看 */
+  font-family: Consolas, "Cascadia Mono", "Courier New", monospace;
+  font-size: 12.5px;
+  line-height: 1.32;
+  white-space: pre;
+  tab-size: 8;
+}
+
+.conhost-line {
+  min-height: 1.32em;
+}
+
+.conhost-view::-webkit-scrollbar {
+  width: 12px;
+  height: 12px;
+}
+
+.conhost-view::-webkit-scrollbar-track {
+  background: #1b1b1b;
+}
+
+.conhost-view::-webkit-scrollbar-thumb {
+  background: #4a4a4a;
+  border-radius: 6px;
+}
+
+.conhost-view::-webkit-scrollbar-thumb:hover {
+  background: #5f5f5f;
+}
+
+/* ---- 提示 ---- */
+.conhost-msg {
+  padding: 14px;
+  color: var(--text-dim);
+  font-family: inherit;
+  white-space: pre-wrap;
+  line-height: 1.6;
+}
+
+.conhost-msg.is-error {
+  color: var(--danger);
+}
+
+/* ---- 输入区（仅 allow_input = true 时显示） ---- */
+.conhost-input {
+  flex: 0 0 auto;
+  border-top: 1px solid var(--win-border);
+  background: var(--win-header);
+  padding: 6px 8px;
+}
+
+.conhost-input-row {
+  display: flex;
+  gap: 6px;
+}
+
+.conhost-input-box {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 5px 8px;
+  border: 1px solid var(--win-border);
+  border-radius: 3px;
+  font-family: inherit;
+  font-size: 12.5px;
+}
+
+.conhost-input-box:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.conhost-keys {
+  display: flex;
+  gap: 6px;
+  margin-top: 6px;
+  flex-wrap: wrap;
+}
+
+.conhost-warn {
+  margin-top: 6px;
+  color: var(--danger);
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+
+/* ---- 状态栏 ---- */
+.conhost-status {
+  flex: 0 0 auto;
+  padding: 4px 10px;
+  border-top: 1px solid var(--win-border);
+  background: #f2f3f5;
+  color: var(--text-dim);
+  font-size: 11.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.conhost-status.is-error {
+  color: var(--danger);
+}
+
+/* 工具栏里的下拉框（沿用 .pv-btn 的观感） */
+.conhost .pv-select {
+  height: 24px;
+  padding: 0 4px;
+  border: 1px solid var(--win-border);
+  border-radius: 3px;
+  background: #fff;
+  color: var(--text);
+  font-size: 12px;
+}

@@ -14,6 +14,7 @@ import { openExplorer } from './explorer.js';
 import { openPreview } from './preview.js';
 import { openTerminal } from './terminal.js';
 import { openTaskManager } from './taskmgr.js';
+import { openConsoleMirror } from './conhost.js';
 import { openUserManager } from './usermgr.js';
 import { openMusic } from './music.js';
 import { openPhotos } from './photos.js';
@@ -115,6 +116,20 @@ export class Desktop {
    */
   sysmonEnabled() {
     return ((this.info.features || {}).sysmon === true);
+  }
+
+  /**
+   * 控制台镜像（看真实桌面上已经开着的命令行窗口）是否可用。
+   *
+   * 服务端的 features.conhost 有三重条件：**仅管理员** + config.json 的
+   * conhost.enabled + Windows 平台。所以子用户这里天然拿到 false，
+   * 入口根本不会出现。
+   *
+   * ★ 界面便利之外还有真拦阻：/api/conhost/* 每个接口都走 require_admin，
+   *   子用户直接请求也是 403。
+   */
+  conhostEnabled() {
+    return ((this.info.features || {}).conhost === true);
   }
 
   /**
@@ -281,6 +296,19 @@ export class Desktop {
         iconName: 'activity',
         kind: 'builtin',
         onOpen: function () { openTaskManager(self); }
+      });
+    }
+
+    // ★ 控制台镜像（看真实桌面上已开着的命令行窗口）：仅管理员可见
+    //   （服务端 features.conhost 把「管理员 + 配置开启 + Windows」三重
+    //   条件合成一个布尔值下发，见 desktop.js 的 conhostEnabled 说明）
+    if (this.conhostEnabled()) {
+      items.push({
+        key: 'conhost',
+        label: '控制台镜像',
+        iconName: 'code',
+        kind: 'builtin',
+        onOpen: function () { openConsoleMirror(self); }
       });
     }
 
@@ -593,6 +621,18 @@ export class Desktop {
         '<span class="sm-hint">性能 / 进程</span></div>';
     }
 
+    // ★ 控制台镜像：看真实桌面上已经开着的命令行窗口。
+    //   入口由 features.conhost 决定（管理员 + 配置开启 + Windows 三重条件）。
+    //   ★ 注意这里和 renderDesktopIcons() 是**两处独立的渲染**：
+    //     开始菜单是手写 HTML、桌面图标是对象列表。只加一处就会变成
+    //     「图标在、菜单里没有」或者反过来 —— 冒烟测试第一次跑就是这么抓到的。
+    if (this.conhostEnabled()) {
+      html += '<div class="sm-item" data-action="conhost">' +
+        '<span class="sm-ico">' + icon('code') + '</span>' +
+        '<span class="sm-text">控制台镜像</span>' +
+        '<span class="sm-hint">真实桌面的命令行窗口</span></div>';
+    }
+
     // 用户管理：仅管理员（服务端 features.users 为 true 时才出现）
     if (this.usersEnabled()) {
       html += '<div class="sm-item" data-action="usermgr">' +
@@ -665,6 +705,8 @@ export class Desktop {
           openTerminal(self);
         } else if (action === 'taskmgr') {
           openTaskManager(self);
+        } else if (action === 'conhost') {
+          openConsoleMirror(self);
         } else if (action === 'usermgr') {
           openUserManager(self);
         } else if (action === 'music') {

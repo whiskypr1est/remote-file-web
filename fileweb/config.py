@@ -175,6 +175,39 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "start_dir": "",
     },
 
+    # ★ 真实桌面控制台镜像（方案 A）
+    # 让虚拟桌面能**看见并操作**真实桌面上**已经开着**的命令行窗口。
+    # 与上面 terminal 的区别：terminal 是本服务自己起的 ConPTY 会话（伪控制台
+    # 天生没有窗口，所以真实桌面看不到它）；本项是去附着**别人已经有**的
+    # 经典控制台，把那扇窗此刻的画面读出来，也可以往里注入按键。
+    #
+    # ★ 安全警告：它会把任意控制台的**屏幕内容**送到浏览器 —— 那些内容里
+    #   可能有口令、令牌、数据库导出；而输入注入等于替人在键盘上打字
+    #   （连「管理员:」开着的控制台都在范围内）。所以这里定的规矩是：
+    #     * 只对**管理员**开放（路由层硬限制，不可配置放宽）；
+    #     * 默认**整体关闭**（enabled = false）；
+    #     * 输入注入另有独立开关（allow_input）—— 看一眼和替人敲键盘
+    #       不是一个量级，所以即使打开了总开关，默认也只是只读；
+    #     * 读在「打开某个控制台镜像」时记一次审计，输入则每次必记
+    #       （读会被按秒轮询，逐次记录会把审计日志淹掉）。
+    #   不需要时保持 enabled = false（改完重启服务生效）。
+    #
+    # ★ 部署约束（三条都会让功能整体失效，权衡前先读）：
+    #   1. 辅助进程必须与目标控制台在**同一个 Windows 会话**；
+    #   2. **不要**把本服务装成 NSSM 服务 —— 服务跑在会话 0，
+    #      AttachConsole 不能跨会话，功能会直接不可用；
+    #   3. 目标若是「管理员:」控制台，本服务也必须以管理员身份运行，
+    #      否则附加时会拿到 ERROR_ACCESS_DENIED(5)。
+    "conhost": {
+        "enabled": False,
+        # 输入注入（往真实窗口里真的打字）。默认关。
+        "allow_input": False,
+        # 一次最多读多少行（log 模式）；硬上限见 conhost_helper.MAX_READ_LINES
+        "max_lines": 500,
+        # 一次最多注入多少字符，防手滑把目标程序灌死
+        "max_input_chars": 2000,
+    },
+
     # ★ 虚拟桌面内置的音乐播放器
     # 曲库是**文件系统里的目录**（不是数据库）：导入 = 把文件复制进去，
     # 所以歌曲在文件管理器里看得见、能备份、能直接用别的播放器打开。
@@ -598,6 +631,26 @@ def prepare(cfg: Dict[str, Any], cfg_path: str = "") -> Dict[str, Any]:
         except (TypeError, ValueError):
             terminal[key] = default
     terminal["start_dir"] = str(terminal.get("start_dir") or "")
+
+    # 真实桌面控制台镜像（方案 A）
+    # ★ enabled 默认 False，而且这里**不做**「配置写错就当开启」的兜底：
+    #   这个功能会把任意控制台的屏幕内容送到浏览器，宁可让人显式打开它。
+    #   （其它开关的惯例是「缺省即开启」，这一项刻意例外。）
+    conhost = cfg.setdefault("conhost", {})
+    conhost["enabled"] = bool(
+        conhost.get("enabled", DEFAULT_CONFIG["conhost"]["enabled"]))
+    conhost["allow_input"] = bool(
+        conhost.get("allow_input", DEFAULT_CONFIG["conhost"]["allow_input"]))
+    for key, default, low, high in (
+        ("max_lines", 500, 1, 4000),
+        ("max_input_chars", 2000, 1, 20000),
+    ):
+        raw = conhost.get(key)
+        try:
+            value = int(default if raw is None else raw)
+        except (TypeError, ValueError):
+            value = default
+        conhost[key] = min(high, max(low, value))
 
     preview = cfg.setdefault("preview", {})
     try:

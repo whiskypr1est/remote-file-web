@@ -202,6 +202,47 @@ export function sysmonSnapshot(top, sort) {
   });
 }
 
+/* ---------------------------------------------------------------------------
+   控制台镜像（方案 A）：看真实桌面上已经开着的命令行窗口
+   --------------------------------------------------------------------------- */
+
+/** 功能状态（是否可用、输入注入是否打开）。不要求管理员 —— 子用户拿到
+ *  available=false 就不会显示入口，也不需要为此弹一个 403。 */
+export function conhostStatus() {
+  return request('GET', '/api/conhost/status');
+}
+
+/** 列出真实桌面上的控制台（按控制台聚合，不是按进程）。 */
+export function conhostList(includeOwn) {
+  return request('GET', '/api/conhost/list', {
+    params: { include_own: includeOwn ? 1 : 0 }
+  });
+}
+
+/**
+ * 读某个控制台的屏幕内容。
+ * @param {number} pid   目标控制台里的任一进程 pid
+ * @param {string} mode  'log'（光标往上 N 行）| 'screen'（可见窗口）
+ * @param {number} lines log 模式读多少行
+ */
+export function conhostRead(pid, mode, lines) {
+  return request('GET', '/api/conhost/read', {
+    params: { pid: pid, mode: mode || 'log', lines: lines || 200 }
+  });
+}
+
+/**
+ * 往某个控制台注入按键。需要服务端 conhost.allow_input = true。
+ * @param {number} pid
+ * @param {string} text 要键入的文本
+ * @param {string[]} keys 具名按键，如 ['enter'] / ['ctrl-c']
+ */
+export function conhostInput(pid, text, keys) {
+  return request('POST', '/api/conhost/input', {
+    json: { pid: pid, text: text || '', keys: keys || null }
+  });
+}
+
 /**
  * 列出压缩包里的条目（只读，不解压）。
  * @param {string} root 根标识

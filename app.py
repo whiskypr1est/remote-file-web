@@ -60,6 +60,7 @@ from fileweb.deps import (
 from fileweb.http_utils import json_error
 from fileweb.office import find_soffice
 from fileweb.routers import auth as auth_router
+from fileweb.routers import conhost as conhost_router
 from fileweb.routers import content as content_router
 from fileweb.routers import desktop as desktop_router
 from fileweb.routers import fs as fs_router
@@ -382,6 +383,16 @@ async def app_lifespan(fastapi_app: FastAPI):
         except Exception:  # noqa: BLE001
             pass
 
+        # 控制台镜像的辅助进程同样要收掉，别留孤儿。
+        # ★ 这里**只关辅助进程**，绝不去动被镜像的那些控制台 ——
+        #   那些窗是用户自己的，服务退出不该影响它们。
+        try:
+            from fileweb import conhost
+
+            conhost.shutdown()
+        except Exception:  # noqa: BLE001
+            pass
+
 
 def create_app(cfg=None) -> FastAPI:
     """创建并配置 FastAPI 应用。"""
@@ -460,6 +471,7 @@ def create_app(cfg=None) -> FastAPI:
     app.include_router(content_router.router)
     app.include_router(desktop_router.router)
     app.include_router(terminal_router.router)
+    app.include_router(conhost_router.router)
     app.include_router(sysmon_router.router)
     app.include_router(jobs_router.router)
     app.include_router(users_router.router)
