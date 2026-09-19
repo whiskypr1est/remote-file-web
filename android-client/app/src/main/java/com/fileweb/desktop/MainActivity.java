@@ -84,8 +84,11 @@ public class MainActivity extends Activity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
-        applyWindowFlags();
+        // ★ 顺序：先建 WebView（setContentView 会创建 decor），再设窗口标志。
+        //   全屏那步要拿 insetsController，而它依赖 decor 已经存在
+        //   （详见 applyWindowFlags 里的注释）。
         buildWebView();
+        applyWindowFlags();
 
         String url = prefs().getString(KEY_URL, "");
         if (url == null || url.trim().isEmpty()) {
@@ -135,7 +138,25 @@ public class MainActivity extends Activity {
         // ★ 时间/电量不会因此看不到 —— 网页的任务栏托盘里本来就有实时时钟与日期。
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             window.setDecorFitsSystemWindows(false);
-            WindowInsetsController controller = window.getInsetsController();
+
+            // ★ 必须先 getDecorView()，再取 insetsController —— 这里踩过一次坑，
+            //   表现为「点开 App 直接闪退」（Android 11+ 必崩，100% 复现）：
+            //
+            //   PhoneWindow.getInsetsController() 的实现是
+            //       return mDecor.getWindowInsetsController();
+            //   ——对 mDecor **没有判空**。而 mDecor 是个普通字段，要等
+            //   installDecor()（由 setContentView / getDecorView 触发）才被创建。
+            //   在它之前调 window.getInsetsController()，抛的是
+            //       NullPointerException: Attempt to invoke virtual method
+            //       '...WindowInsetsController ...DecorView.getWindowInsetsController()'
+            //       on a null object reference
+            //   而这行在 onCreate 里，Activity 根本起不来 —— 连黑屏都来不及显示。
+            //
+            //   走 getDecorView() 就一定先装好 decor；而且 DecorView 覆写了这个方法，
+            //   在还没 attach 到窗口时返回 mPendingInsetsController，
+            //   所以拿到的 controller 一定可用（不需要挪到 onWindowFocusChanged）。
+            WindowInsetsController controller =
+                window.getDecorView().getWindowInsetsController();
             if (controller != null) {
                 controller.hide(WindowInsets.Type.statusBars());
                 controller.setSystemBarsBehavior(
